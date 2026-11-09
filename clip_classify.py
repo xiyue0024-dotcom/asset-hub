@@ -171,15 +171,20 @@ def fetch_thumb(url, width=250):
 def main():
     limit = None
     retry = False
+    scenes = None
     for a in sys.argv[1:]:
         if a == "--retry":
             retry = True
+        elif a.startswith("--scenes="):
+            scenes = a.split("=", 1)[1].split(",")
         elif a.isdigit():
             limit = int(a)
 
     conn = S.db()
     S.init_db()
     where = "clip_done IS NULL" if not retry else "1=1"
+    if scenes:
+        where += " AND scene IN (%s)" % ",".join("'%s'" % x for x in scenes)
     # 优先处理最需要分类的：其他场景、餐饮与建筑混淆的
     sql = """SELECT id, thumb, title FROM photos WHERE hidden=0 AND %s
              ORDER BY CASE scene

@@ -708,6 +708,7 @@ MIGRATIONS = [
     "ALTER TABLE photos ADD COLUMN clip_sign INTEGER",
     "ALTER TABLE photos ADD COLUMN clip_product INTEGER",
     "ALTER TABLE photos ADD COLUMN clip_done INTEGER",
+    "ALTER TABLE photos ADD COLUMN scene_rule TEXT",
 ]
 
 # 质量阈值
@@ -1951,6 +1952,46 @@ def enrich_scan(limit=None, scene=None, workers=1, only="all"):
     return done
 
 
+def apply_clip(min_score=0.0):
+    """用 CLIP 判定覆盖规则分类。原值存在 scene_rule，可回滚。"""
+    conn = db()
+    conn.execute("UPDATE photos SET scene_rule=scene WHERE scene_rule IS NULL")
+    rows = conn.execute(
+        "SELECT id, scene, clip_scene, clip_score, title, descr, tags, country, city "
+        "FROM photos WHERE clip_done IS NOT NULL AND clip_scene IS NOT NULL "
+        "AND clip_scene != scene"
+    ).fetchall()
+    n = 0
+    for r in rows:
+        if (r["clip_score"] or 0) < min_score:
+            continue
+        st = " ".join([r["title"] or "", r["descr"] or "", r["tags"] or "",
+                       r["country"] or "", r["city"] or "",
+                       r["clip_scene"] or ""]).lower()
+        conn.execute("UPDATE photos SET scene=?, search_text=? WHERE id=?",
+                     (r["clip_scene"], st, r["id"]))
+        n += 1
+    conn.commit()
+    conn.close()
+    _facets_cache.clear()
+    print("应用 CLIP 场景 %d 条（置信度 >= %.2f）" % (n, min_score), flush=True)
+    return n
+
+
+def revert_clip():
+    """回滚到规则分类。"""
+    conn = db()
+    n = conn.execute(
+        "UPDATE photos SET scene=scene_rule "
+        "WHERE scene_rule IS NOT NULL AND scene != scene_rule"
+    ).rowcount
+    conn.commit()
+    conn.close()
+    _facets_cache.clear()
+    print("已回滚 %d 条到规则分类" % n, flush=True)
+    return n
+
+
 def recolor():
     """用已存的指标按当前阈值重算黑白/标识判定，不联网。"""
     conn = db()
@@ -3075,6 +3116,12 @@ def main():
             return
         if cmd == "cats":
             scan_categories()
+            return
+        if cmd == "apply_clip":
+            apply_clip(float(sys.argv[2]) if len(sys.argv) > 2 else 0.0)
+            return
+        if cmd == "revert_clip":
+            revert_clip()
             return
         if cmd == "recolor":
             recolor()
