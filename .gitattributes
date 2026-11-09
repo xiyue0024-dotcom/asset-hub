@@ -1,0 +1,10 @@
+# 统一用 LF 存储，避免 Windows 换行符导致每日更新产生大量无意义 diff
+* text=auto eol=lf
+
+# 二进制文件不要做文本转换
+*.db binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
