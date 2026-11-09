@@ -264,6 +264,13 @@ ANIMAL_RX = _build([
 ])
 FOOD_SCENES = ("美食", "用餐", "聚餐", "咖啡")
 
+# 纯「外观」词：只要标题里有，就不该是餐饮场景（不受菜品词影响）
+EXTERIOR_RX = _build([
+    "building", "exterior", "facade", "construction", "hoarding", "scaffold",
+    "junction", "vacant land", "empty plot", "shoplot",
+    "single storey", "single-storey", "premises", "street view", "aerial view",
+])
+
 # 建筑/外观强信号：标题里有这些词且没有具体菜品词时，餐饮判定作废
 BUILDING_RX = _build([
     "building", "block", "hdb", "flats", "apartment", "tower", "skyscraper",
@@ -462,6 +469,10 @@ def _classify_core(title, desc, hint_country=None):
     # 标题里出现动物名时，餐饮类判定一律作废
     if scene in FOOD_SCENES and any(_hit(p, t) for p in ANIMAL_RX):
         scene = "自然"
+
+    # 纯外观照：不管有没有菜品词，都不算餐饮
+    if scene in FOOD_SCENES and any(_hit(p, t) for p in EXTERIOR_RX):
+        scene = "建筑"
 
     # 标题是建筑/外观、又没有具体菜品词 → 归到建筑，避免"food centre"把楼判成美食
     if (scene in FOOD_SCENES
