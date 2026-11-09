@@ -2010,18 +2010,70 @@ def clip_report(limit=20, min_score=0.85):
     conn.close()
 
 
-def merge_clip_flags():
-    """把 CLIP 的质量标记并进现有过滤字段，前端无需改动即可生效。"""
+def merge_clip_flags(kinds=("gray",)):
+    """把 CLIP 的质量标记并进现有过滤字段，前端无需改动即可生效。
+
+    默认只合并黑白——实测它精度最高（抽查 6/6 全对）；
+    标识/产品图/插画的 CLIP 判定精度只有 40~50%，直接合并会误杀好图。
+    """
+    sql = {
+        "gray": ("黑白", "UPDATE photos SET is_gray=1 WHERE clip_gray=1 AND COALESCE(is_gray,0)=0"),
+        "sign": ("标识", "UPDATE photos SET junk_sign=1 WHERE clip_sign=1 AND COALESCE(junk_sign,0)=0"),
+        "graphic": ("插画", "UPDATE photos SET is_graphic=1 WHERE clip_graphic=1 AND COALESCE(is_graphic,0)=0"),
+        "product": ("车辆特写", "UPDATE photos SET car_iso=100 WHERE clip_product=1 AND COALESCE(car_iso,0)<60"),
+    }
     conn = db()
-    g = conn.execute("UPDATE photos SET is_gray=1 WHERE clip_gray=1 AND COALESCE(is_gray,0)=0").rowcount
-    j = conn.execute("UPDATE photos SET junk_sign=1 WHERE clip_sign=1 AND COALESCE(junk_sign,0)=0").rowcount
-    f = conn.execute("UPDATE photos SET is_graphic=1 WHERE clip_graphic=1 AND COALESCE(is_graphic,0)=0").rowcount
-    c = conn.execute("UPDATE photos SET car_iso=100 WHERE clip_product=1 AND COALESCE(car_iso,0)<60").rowcount
+    total = 0
+    parts = []
+    for k in kinds:
+        if k not in sql:
+            continue
+        label, stmt = sql[k]
+        n = conn.execute(stmt).rowcount
+        total += n
+        parts.append("%s +%d" % (label, n))
     conn.commit()
     conn.close()
     _facets_cache.clear()
-    print("合并 CLIP 标记：黑白 +%d、标识 +%d、插画 +%d、车辆特写 +%d" % (g, j, f, c), flush=True)
-    return g + j + f + c
+    print("合并 CLIP 标记：" + "、".join(parts or ["无"]), flush=True)
+    return total
+
+
+def rebuild_from_cats():
+    """用已存的 Commons 分类文本重算黑白/标识/车辆标记，不联网。
+
+    之前那次误清把标识标记清掉了（146 条只剩 21 条），分类文本还在库里，直接重算即可。
+    """
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, cats, is_gray, junk_sign, vehicle FROM photos "
+        "WHERE cats IS NOT NULL AND cats != ''"
+    ).fetchall()
+    g = j = c = 0
+    for r in rows:
+        cl = (r["cats"] or "").lower()
+        if not cl:
+            continue
+        ng = 1 if any(_hit(k, cl) for k in CAT_GRAY) else 0
+        nj = 1 if any(_hit(k, cl) for k in CAT_SIGN) else 0
+        nc = 1 if any(_hit(k, cl) for k in CAT_CAR) else 0
+        if ng and not r["is_gray"]:
+            g += 1
+        if nj and not r["junk_sign"]:
+            j += 1
+        if nc and not r["vehicle"]:
+            c += 1
+        if ng or nj or nc:
+            conn.execute(
+                "UPDATE photos SET is_gray=MAX(COALESCE(is_gray,0),?), "
+                "junk_sign=MAX(COALESCE(junk_sign,0),?), "
+                "vehicle=MAX(COALESCE(vehicle,0),?) WHERE id=?",
+                (ng, nj, nc, r["id"]))
+    conn.commit()
+    conn.close()
+    _facets_cache.clear()
+    print("按分类文本重算：黑白 +%d、标识 +%d、车辆主题 +%d" % (g, j, c), flush=True)
+    return g + j + c
 
 
 def revert_clip():
@@ -3169,8 +3221,12 @@ def main():
         if cmd == "clip_report":
             clip_report(int(sys.argv[2]) if len(sys.argv) > 2 else 20)
             return
+        if cmd == "from_cats":
+            rebuild_from_cats()
+            return
         if cmd == "merge_clip_flags":
-            merge_clip_flags()
+            kinds = sys.argv[2].split(",") if len(sys.argv) > 2 else ["gray"]
+            merge_clip_flags(tuple(kinds))
             return
         if cmd == "revert_clip":
             revert_clip()
