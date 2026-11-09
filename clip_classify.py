@@ -25,6 +25,7 @@ import sys
 import threading
 import time
 import urllib.parse
+import urllib.error
 import urllib.request
 
 import torch
@@ -121,7 +122,8 @@ QUALITY_PROMPTS = {
 
 _lock = threading.Lock()
 _last = [0.0]
-_gap = [1.2]
+_gap = [1.6]
+GAP_MIN = 1.6
 # 各标记的判定余量。黑白不走 CLIP——它会把「白墙/灰背景/黑白车身」误判成黑白照，
 # 改由像素级饱和度分析判定（图片已在内存里，不额外联网）。
 FLAG_MARGIN = {"sign": 0.50, "product": 0.55, "graphic": 0.75}
@@ -185,14 +187,24 @@ def fetch_thumb(url, width=250, title=""):
     channels.append(("direct", S.thumbify(url, width)))
     channels.append(("wsrv", S.wsrv(url, width)))
 
+    last = "other"
     for name, u in channels:
         try:
             pace()
-            return get(u, 25 if name == "wsrv" else 20)
-        except Exception:
-            _gap[0] = min(3.0, _gap[0] * 1.5)
+            data = get(u, 25 if name == "wsrv" else 20)
+            # 成功就慢慢把间隔收回来，否则一次失败会把速度永久压在慢档
+            _gap[0] = max(GAP_MIN, _gap[0] * 0.97)
+            return data, "ok"
+        except urllib.error.HTTPError as e:
+            # 只有 429/403 才算被限流；404 之类是文件本身的问题，不该拖慢全局
+            last = "rate" if e.code in (429, 403) else "other"
+            _gap[0] = min(2.5, _gap[0] * 1.4)
             continue
-    return None
+        except Exception:
+            last = "other"
+            _gap[0] = min(2.5, _gap[0] * 1.4)
+            continue
+    return None, last
 
 
 def main():
@@ -235,12 +247,12 @@ def main():
     done = failed = streak = 0
     started = time.time()
     for r in rows:
-        data = fetch_thumb(r["thumb"], title=r["title"])
+        data, why = fetch_thumb(r["thumb"], title=r["title"])
         if not data:
             failed += 1
-            streak += 1
-            # 连续失败说明被限流，退避等待而不是空转烧掉队列
-            if streak >= 5:
+            streak = streak + 1 if why == "rate" else 0
+            # 连续被限流才退避，个别坏文件不触发
+            if streak >= 6:
                 wait = min(300, 30 * streak)
                 print("  连续失败 %d 次，冷却 %d 秒…" % (streak, wait), flush=True)
                 time.sleep(wait)

@@ -1952,8 +1952,12 @@ def enrich_scan(limit=None, scene=None, workers=1, only="all"):
     return done
 
 
-def apply_clip(min_score=0.0):
-    """用 CLIP 判定覆盖规则分类。原值存在 scene_rule，可回滚。"""
+def apply_clip(min_score=0.85, exclude=("标识",)):
+    """用 CLIP 判定覆盖规则分类。原值存在 scene_rule，可回滚。
+
+    - min_score: 只采纳置信度不低于该值的改判（低分区的 CLIP 判定比规则更差）
+    - exclude:   这些 CLIP 场景类不参与改判（CLIP 会滥用「标识」，只作过滤标记）
+    """
     conn = db()
     conn.execute("UPDATE photos SET scene_rule=scene WHERE scene_rule IS NULL")
     rows = conn.execute(
@@ -1961,9 +1965,13 @@ def apply_clip(min_score=0.0):
         "FROM photos WHERE clip_done IS NOT NULL AND clip_scene IS NOT NULL "
         "AND clip_scene != scene"
     ).fetchall()
-    n = 0
+    n = skip_low = skip_ex = 0
     for r in rows:
         if (r["clip_score"] or 0) < min_score:
+            skip_low += 1
+            continue
+        if r["clip_scene"] in exclude:
+            skip_ex += 1
             continue
         st = " ".join([r["title"] or "", r["descr"] or "", r["tags"] or "",
                        r["country"] or "", r["city"] or "",
@@ -1974,8 +1982,46 @@ def apply_clip(min_score=0.0):
     conn.commit()
     conn.close()
     _facets_cache.clear()
-    print("应用 CLIP 场景 %d 条（置信度 >= %.2f）" % (n, min_score), flush=True)
+    print("应用 CLIP 场景 %d 条（门槛 %.2f）｜跳过：低置信 %d、排除类 %d"
+          % (n, min_score, skip_low, skip_ex), flush=True)
     return n
+
+
+def clip_report(limit=20, min_score=0.85):
+    """列出待应用的改判样本，供人工验收。"""
+    conn = db()
+    print("=== 会被采纳的改判（置信度 >= %.2f，排除 标识）===" % min_score)
+    for r in conn.execute(
+        "SELECT title, scene, clip_scene, clip_score FROM photos "
+        "WHERE clip_done IS NOT NULL AND clip_scene != scene AND clip_score >= ? "
+        "AND clip_scene NOT IN ('标识') ORDER BY RANDOM() LIMIT ?",
+        (min_score, limit)).fetchall():
+        print("  %-42s %-4s → %-4s %.2f"
+              % ((r["title"] or "")[:42], r["scene"], r["clip_scene"], r["clip_score"]))
+    print()
+    print("=== 被门槛挡掉的（0.6~%.2f）===" % min_score)
+    for r in conn.execute(
+        "SELECT title, scene, clip_scene, clip_score FROM photos "
+        "WHERE clip_done IS NOT NULL AND clip_scene != scene "
+        "AND clip_score >= 0.6 AND clip_score < ? ORDER BY RANDOM() LIMIT 6",
+        (min_score,)).fetchall():
+        print("  %-42s %-4s → %-4s %.2f"
+              % ((r["title"] or "")[:42], r["scene"], r["clip_scene"], r["clip_score"]))
+    conn.close()
+
+
+def merge_clip_flags():
+    """把 CLIP 的质量标记并进现有过滤字段，前端无需改动即可生效。"""
+    conn = db()
+    g = conn.execute("UPDATE photos SET is_gray=1 WHERE clip_gray=1 AND COALESCE(is_gray,0)=0").rowcount
+    j = conn.execute("UPDATE photos SET junk_sign=1 WHERE clip_sign=1 AND COALESCE(junk_sign,0)=0").rowcount
+    f = conn.execute("UPDATE photos SET is_graphic=1 WHERE clip_graphic=1 AND COALESCE(is_graphic,0)=0").rowcount
+    c = conn.execute("UPDATE photos SET car_iso=100 WHERE clip_product=1 AND COALESCE(car_iso,0)<60").rowcount
+    conn.commit()
+    conn.close()
+    _facets_cache.clear()
+    print("合并 CLIP 标记：黑白 +%d、标识 +%d、插画 +%d、车辆特写 +%d" % (g, j, f, c), flush=True)
+    return g + j + f + c
 
 
 def revert_clip():
@@ -3118,7 +3164,13 @@ def main():
             scan_categories()
             return
         if cmd == "apply_clip":
-            apply_clip(float(sys.argv[2]) if len(sys.argv) > 2 else 0.0)
+            apply_clip(float(sys.argv[2]) if len(sys.argv) > 2 else 0.85)
+            return
+        if cmd == "clip_report":
+            clip_report(int(sys.argv[2]) if len(sys.argv) > 2 else 20)
+            return
+        if cmd == "merge_clip_flags":
+            merge_clip_flags()
             return
         if cmd == "revert_clip":
             revert_clip()
