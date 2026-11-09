@@ -17,3 +17,6 @@ __pycache__/
 # 调试截图
 *.png
 !brand/**
+
+# CLIP 模型权重，体积大且可重新下载
+data/clip/

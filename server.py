@@ -700,6 +700,14 @@ MIGRATIONS = [
     "ALTER TABLE photos ADD COLUMN enrich_at INTEGER",
     "ALTER TABLE photos ADD COLUMN cat_checked INTEGER",
     "ALTER TABLE photos ADD COLUMN cats TEXT",
+    # CLIP 零样本分类
+    "ALTER TABLE photos ADD COLUMN clip_scene TEXT",
+    "ALTER TABLE photos ADD COLUMN clip_score REAL",
+    "ALTER TABLE photos ADD COLUMN clip_gray INTEGER",
+    "ALTER TABLE photos ADD COLUMN clip_graphic INTEGER",
+    "ALTER TABLE photos ADD COLUMN clip_sign INTEGER",
+    "ALTER TABLE photos ADD COLUMN clip_product INTEGER",
+    "ALTER TABLE photos ADD COLUMN clip_done INTEGER",
 ]
 
 # 质量阈值
