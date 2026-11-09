@@ -149,6 +149,10 @@ const wsrvUrl = (u, w) => u
   ? 'https://wsrv.nl/?url=' + encodeURIComponent(u) + '&w=' + w + '&output=webp&q=78'
   : '';
 const cdn = (u, w) => (FORCE_PROXY ? wsrvUrl(u, w || 400) : (u || ''));
+// Wikimedia 只开放 500px 和 1280px 两档；原图小于 1280 时用 500
+const bump = (u, w) => String(u || '').replace(/\/(\d+)px-/, '/' + w + 'px-');
+const bigUrl = (p) => (p.width && p.width <= 600 ? (p.thumb || '') : bump(p.thumb || p.preview, 1280));
+
 
 document.addEventListener('error', (e) => {
   const img = e.target;
@@ -253,7 +257,8 @@ function cardHTML(r, i) {
   const on = SAVED.has(p.id);
   const ar = (p.width && p.height) ? ` style="aspect-ratio:${p.width}/${p.height}"` : '';
   return `<figure class="card${r.weak ? ' weak' : ''}" data-i="${i}">
-    <img src="${esc(cdn(p.thumb, 400))}" data-fb="${esc(FORCE_PROXY ? p.thumb : wsrvUrl(p.thumb, 400))}"
+    <img src="${esc(p.thumb)}" srcset="${esc(p.thumb)} 500w, ${esc(bigUrl(p))} 1280w"
+         sizes="(max-width: 700px) 46vw, 330px" data-fb="${esc(p.thumb)}"
          alt="${esc(p.title)}" loading="lazy" decoding="async"${ar}>
     ${badge}
     <button class="fav ${on ? 'on' : ''}" data-id="${p.id}" title="${on ? '取消收藏' : '收藏'}">${on ? '♥' : '♡'}</button>
@@ -394,7 +399,7 @@ function renderLB() {
 
   const img = $('#lbImg');
   img.onerror = () => { img.onerror = null; img.src = p.thumb; };
-  img.src = cdn(p.thumb, 1200);
+  img.src = cdn(bigUrl(p), 1280);
   img.alt = p.title || '';
 
   $('#lbTitle').textContent = p.title || '未命名素材';

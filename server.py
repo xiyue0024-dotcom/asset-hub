@@ -197,7 +197,8 @@ SCENES = [
               "dancer", "musician"]),
     ("建筑", ["architecture", "building", "skyline", "tower", "skyscraper", "temple",
               "mosque", "church", "cathedral", "bridge", "facade", "shophouse",
-              "pagoda", "palace", "museum", "monument"]),
+              "pagoda", "palace", "museum", "monument", "hdb", "flats", "apartment",
+              "construction", "hoarding", "scaffold", "estate", "complex", "lobby"]),
     ("自然", ["nature", "mountain", "volcano", "waterfall", "forest", "rice terrace",
               "rice field", "rice fields", "paddy", "paddy field", "jungle", "lake",
               "park", "garden", "cave", "river", "hill", "sunset", "sunrise",
@@ -262,6 +263,22 @@ ANIMAL_RX = _build([
     "frog", "spider", "scorpion", "crab-eating",
 ])
 FOOD_SCENES = ("美食", "用餐", "聚餐", "咖啡")
+
+# 建筑/外观强信号：标题里有这些词且没有具体菜品词时，餐饮判定作废
+BUILDING_RX = _build([
+    "building", "block", "hdb", "flats", "apartment", "tower", "skyscraper",
+    "facade", "exterior", "construction", "hoarding", "scaffold", "complex",
+    "shophouse", "estate", "architecture", "interior of", "lobby", "atrium",
+])
+
+# 具体菜品/餐具词：出现这些才算是真正的美食照
+DISH_RX = _build([
+    "nasi", "satay", "sate", "laksa", "bakso", "soto", "rendang", "gado",
+    "mie", "dish", "dishes", "plate", "bowl", "meal", "kueh", "cake", "dessert",
+    "curry", "soup", "noodle", "fried rice", "rice dish", "seafood", "dim sum",
+    "snack", "bakery", "juice", "smoothie", "grill", "roti", "prata", "kaya",
+    "food on", "serving", "platter", "tray of",
+])
 
 # 自拍 / 单人人像 / 群体场景 识别
 SELFIE_RX = _build([
@@ -445,6 +462,18 @@ def _classify_core(title, desc, hint_country=None):
     # 标题里出现动物名时，餐饮类判定一律作废
     if scene in FOOD_SCENES and any(_hit(p, t) for p in ANIMAL_RX):
         scene = "自然"
+
+    # 标题是建筑/外观、又没有具体菜品词 → 归到建筑，避免"food centre"把楼判成美食
+    if (scene in FOOD_SCENES
+            and any(_hit(p, t) for p in BUILDING_RX)
+            and not any(_hit(p, t) for p in DISH_RX)):
+        scene = "建筑"
+
+    # 只有 "market / centre" 这类场所词、没有菜品词 → 归到街景
+    if (scene == "美食"
+            and not any(_hit(p, t) for p in DISH_RX)
+            and any(_hit(p, t) for p in _build(["market", "centre", "center", "hall"]))):
+        scene = "街景"
 
     return country, city, scene
 
