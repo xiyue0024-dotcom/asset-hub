@@ -117,6 +117,7 @@ const state = {
   q: '', country: '', city: '', scene: '', orient: '', saved: false,
   page: 1, per: 24, mode: 'browse', list: [], shown: 0, idx: -1,
   minpx: 1000000, nowm: true, noselfie: true, noblur: false, nogfx: true,
+  nogray: true, nocar: true, nojunk: true,
 };
 
 let ALL = [];
@@ -190,6 +191,9 @@ function matchesFilters(p) {
   if (state.noselfie && (p.selfie || p.solo)) return false;
   if (state.noblur && p.blur != null && p.blur < BLUR_THRESHOLD) return false;
   if (state.nogfx && p.gf) return false;
+  if (state.nogray && p.gray) return false;
+  if (state.nocar && p.car >= 60) return false;
+  if (state.nojunk && p.junk) return false;
   return true;
 }
 
@@ -365,7 +369,7 @@ function buildFacets() {
   const wm = ALL.filter(p => p.wm).length;
   const ppl = ALL.filter(p => p.selfie || p.solo).length;
   const qi = $('#qinfo');
-  if (qi) qi.textContent = `低清 ${lowres} · 疑似水印 ${wm} · 自拍/单人 ${ppl}`;
+  if (qi) qi.textContent = `低清 ${lowres} · 水印 ${wm} · 自拍/单人 ${ppl} · 黑白 ${ALL.filter(p=>p.gray).length} · 车辆 ${ALL.filter(p=>p.car>=60).length} · 标识 ${ALL.filter(p=>p.junk).length}`;
 }
 
 /* ---------------- 灯箱 ---------------- */
@@ -520,6 +524,9 @@ $('#optWm').addEventListener('change', (e) => { state.nowm = e.target.checked; r
 $('#optSelfie').addEventListener('change', (e) => { state.noselfie = e.target.checked; render(); });
 $('#optBlur').addEventListener('change', (e) => { state.noblur = e.target.checked; render(); });
 $('#optGfx').addEventListener('change', (e) => { state.nogfx = e.target.checked; render(); });
+$('#optGray').addEventListener('change', (e) => { state.nogray = e.target.checked; render(); });
+$('#optCar').addEventListener('change', (e) => { state.nocar = e.target.checked; render(); });
+$('#optJunk').addEventListener('change', (e) => { state.nojunk = e.target.checked; render(); });
 
 $('#moreBtn').addEventListener('click', loadMore);
 
@@ -572,6 +579,7 @@ new IntersectionObserver((entries) => {
         id: x.i, title: x.t, descr: x.d, city: x.c, scene: x.s, country: x.n,
         orientation: x.o, width: x.w, height: x.h, thumb: x.th, page: x.pg,
         license: x.li, artist: x.ar, selfie: x.sf, solo: x.so, wm: x.wm, blur: x.bl, gf: x.gf,
+        gray: x.gy, car: x.ci, junk: x.jk,
       };
       p._t = String(p.title || '').toLowerCase();
       p._f = [p.country, p.city, p.scene].join(' ').toLowerCase();

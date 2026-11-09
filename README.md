@@ -160,6 +160,41 @@ python build_static.py out_dir  # 输出到指定目录
 | 隐藏疑似水印 | 图像四角边缘密度显著高于中心 → 判为角标/水印/日期戳 | 开 |
 | 隐藏自拍/单人像 | 标题含 selfie / portrait / "man with…" 等单人特征，且不含 group / crowd / family 等群体词 | 开 |
 | 隐藏模糊 | 边缘强度低于阈值 | 关 |
+| 隐藏插画/二维图 | 标题含 illustration / vector / drawing 等，或 Commons 分类为 DRAWING/SVG | 开 |
+| 隐藏黑白/灰度 | 五指标联合判定：无彩像素占比、平均饱和度、三通道相关度、色相集中度、主色相带。褐调老照片单独记 `sepia` 列 | 开 |
+| 隐藏车辆特写 | 车辆主题（tags/标题/分类）+ 产品式机位词（front view / interior…）+ 无场景词 + 无人物 | 开 |
+| 隐藏标识/编号照 | 纯编号标题（M31/H19）+ 路牌门牌店招词 + 图像低色阶确认 | 开 |
+
+### 三类新过滤的判定细节
+
+**黑白照**要求四个条件同时满足，缺一不可：
+
+```
+无彩像素占比 < 0.03   且  平均饱和度 < 20          → 纯灰
+三通道相关度 ≥ 0.990  且  色相集中度 ≥ 0.95
+且  主色相落在 8–48°（暖色带）且 饱和度 ≤ 90      → 褐调老照片
+```
+
+单指标会误判：实测一张 Cherry 内饰图三通道相关度 0.9908，但主色相是 210°（蓝），靠色相带挡住。
+
+**车辆特写**优先用采集来源判定（`Category:Automobiles`、`parkir mobil` 等种子），再用产品式机位词（`front view` / `interior` / `(cropped)`），最后用图像布局（中心边缘集中度、边框主色占比、色彩阶数）补漏。
+
+**标识照**先看标题是不是纯编号（`M31`、`H19`），再看是否命中路牌/门牌/店招词且标题很短，最后用图像确认（色彩阶 ≤ 0.30 + 边框纯色 ≥ 0.55）。
+
+### 批量检测命令
+
+```bash
+python server.py cats       # 查 Commons 分类（不下载图片，最快，零误判）
+python server.py enrich     # 逐张图像分析（慢，受限流影响，作补充）
+python server.py gray       # 只扫黑白候选
+python server.py car        # 只扫车辆候选
+python server.py recolor    # 用已存指标按当前阈值重算，不联网
+python server.py calibrate  # 抽样打印指标分布，用于定阈值
+```
+
+`cats` 一次请求查 50 个文件，14,394 个约 1–2 小时；`enrich` 逐张下载，实测受限流影响只有 2 张/分钟，仅在必要时小批量跑。
+
+**改阈值不用重扫**：所有原始指标（`sat_mean` / `color_frac` / `hue_conc` / `dom_hue` / `mono_corr`）都存了库，`recolor` 是纯 SQL 重算。
 
 **自拍与单人像的判定逻辑**：先看是不是自拍（selfie、"me at"、"my wife"），再看有没有群体词（group / crowd / family / dance / festival / buffet）。**有群体词的保留**——所以聚餐、宴席、节庆这类不漏拍摄者的合影不会被误杀。
 

@@ -6,6 +6,7 @@ const state = {
   saved: false, page: 1, per: 24, total: 0, items: [], loading: false, idx: -1,
   mode: 'browse', ingested: 0,
   minpx: 1000000, nowm: true, noselfie: true, noblur: false, nogfx: true,
+  nogray: true, nocar: true, nojunk: true,
 };
 
 const esc = (s) => String(s == null ? '' : s)
@@ -61,7 +62,7 @@ async function loadFacets() {
 
   const q = f.quality || {};
   $('#qinfo').textContent =
-    `低清 ${q.lowres || 0} · 疑似水印 ${q.wm || 0} · 插画 ${q.graphic || 0} · 人物 ${q.people || 0}` +
+    `低清 ${q.lowres || 0} · 水印 ${q.wm || 0} · 插画 ${q.graphic || 0} · 黑白 ${q.gray || 0} · 车辆 ${q.car || 0} · 标识 ${q.junk || 0}` +
     (q.checked ? ` · 已检测 ${q.checked}` : '');
 
   const sel = $('#citySel');
@@ -100,6 +101,9 @@ function queryParams() {
     noselfie: state.noselfie ? '1' : '',
     noblur: state.noblur ? '1' : '',
     nogfx: state.nogfx ? '1' : '',
+    nogray: state.nogray ? '1' : '',
+    nocar: state.nocar ? '1' : '',
+    nojunk: state.nojunk ? '1' : '',
   };
 }
 
@@ -401,6 +405,9 @@ $('#optWm').addEventListener('change', (e) => { state.nowm = e.target.checked; s
 $('#optSelfie').addEventListener('change', (e) => { state.noselfie = e.target.checked; search(true); });
 $('#optBlur').addEventListener('change', (e) => { state.noblur = e.target.checked; search(true); });
 $('#optGfx').addEventListener('change', (e) => { state.nogfx = e.target.checked; search(true); });
+$('#optGray').addEventListener('change', (e) => { state.nogray = e.target.checked; search(true); });
+$('#optCar').addEventListener('change', (e) => { state.nocar = e.target.checked; search(true); });
+$('#optJunk').addEventListener('change', (e) => { state.nojunk = e.target.checked; search(true); });
 
 $('#moreBtn').addEventListener('click', () => { state.page++; search(false); });
 

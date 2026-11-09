@@ -10,6 +10,7 @@
 
 import json
 import os
+import re
 import shutil
 import sys
 
@@ -27,7 +28,7 @@ def main():
     rows = conn.execute(
         """SELECT id, title, descr, city, scene, country, orientation,
                   width, height, thumb, page, license, artist,
-                  selfie, solo, wm_suspect, blur_score, is_graphic
+                  selfie, solo, wm_suspect, blur_score, is_graphic, is_gray, car_iso, junk_sign
            FROM photos WHERE hidden=0 ORDER BY id DESC"""
     ).fetchall()
     conn.close()
@@ -57,6 +58,9 @@ def main():
             "wm": r["wm_suspect"] or 0,
             "bl": r["blur_score"],
             "gf": r["is_graphic"] or 0,
+            "gy": r["is_gray"] or 0,
+            "ci": round(r["car_iso"] or 0),
+            "jk": r["junk_sign"] or 0,
         })
 
     payload = {
@@ -84,6 +88,15 @@ def main():
     for name in ("index.html", "app.js"):
         shutil.copyfile(os.path.join(SRC, name), os.path.join(OUT, name))
     shutil.copyfile(STYLE, os.path.join(OUT, "style.css"))
+
+    # 给 library.js 加版本号，避免浏览器/Pages 缓存旧数据
+    ver = str(int(os.path.getmtime(js_path)))
+    idx = os.path.join(OUT, "index.html")
+    with open(idx, encoding="utf-8") as f:
+        html = f.read()
+    html = re.sub(r"library\.js(\?v=\d+)?", "library.js?v=" + ver, html)
+    with open(idx, "w", encoding="utf-8") as f:
+        f.write(html)
 
     # GitHub Pages 默认跑 Jekyll，关掉可以加快构建并避免忽略下划线开头的文件
     open(os.path.join(OUT, ".nojekyll"), "w").close()

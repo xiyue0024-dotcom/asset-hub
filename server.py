@@ -295,6 +295,93 @@ PERSON_RX = _build([
 DATE_RX = re.compile(r"\b(?:19|20)\d{2}[-_.]?(?:0[1-9]|1[0-2])[-_.]?(?:0[1-9]|[12]\d|3[01])"
                      r"(?:[ _-]?\d{4,6})?\b")
 
+# ---------------------------------------------------------------------------
+# 车辆特写 / 标识照 文本规则
+# ---------------------------------------------------------------------------
+VEHICLE_RX = _build([
+    "mobil", "motor", "automobile", "car park", "parking", "parkir", "showroom",
+    "dealer", "bengkel", "cuci mobil", "tempat parkir", "kendaraan", "vehicle",
+    "toyota", "honda", "yamaha", "suzuki", "daihatsu", "mitsubishi", "isuzu",
+    "kia", "hyundai", "wuling", "chery", "avanza", "ertiga", "nmax", "vario",
+    "angkot", "bajaj", "bemo", "ojol", "truk", "truck", "lorry", "taksi", "taxi",
+    "lalu lintas", "jalan tol", "expressway",
+])
+
+# 产品式机位/特写：判「孤立车辆」最强的文本证据
+PRODUCT_SHOT_RX = re.compile(
+    r"front view|rear view|side view|rear left|rear right|front left|front right|"
+    r"left side|right side|3/4 view|interior|dashboard|engine bay|"
+    r"headlight|taillight|wheel|badge|detail|studio|\(cropped\)", re.I)
+
+# 出现这些词说明是场景照，不能判为孤立
+# 出现这些词说明是「有场景的车」，不算孤立产品照。注意 parked/parkir 不算场景
+CAR_SCENE_RX = _build([
+    "street", "jalan", "market", "pasar", "crowd", "people",
+    "traffic", "lalu lintas", "highway", "tol", "terminal", "station", "mall",
+    "passenger", "penumpang", "driver", "pengemudi",
+])
+
+# 标识照：路牌、门牌、店招、柱子编号
+SIGN_RX = _build([
+    "street sign", "road sign", "traffic sign", "signboard", "shop sign",
+    "store sign", "storefront sign", "signage", "nameplate", "plaque",
+    "billboard", "notice board", "noticeboard", "directory", "wayfinding",
+    "lettering", "typography", "house number", "unit number", "lot number",
+    "car park sign", "carpark sign", "basement sign", "level sign",
+    "pillar number", "pylon sign", "signpost", "roadside sign",
+    "close-up of sign", "close up of sign", "sign close-up", "sign close up",
+])
+
+SIGN_CODE_RX = re.compile(r"^[a-z]{0,2}[-_ ]?\d{1,3}[a-z]?$", re.I)
+
+# 弱信号：只有标题很短且不含场景词时才判标识照
+SIGN_WEAK_RX = _build(["carpark", "car park", "basement", "pillar", "level b"])
+SIGN_SCENE_SAFE = _build(["street scene", "market", "pasar", "crowd", "people",
+                          "traffic", "parked", "panorama", "view of"])
+
+
+def car_flags(title, descr, tags, scene, person):
+    """返回 (车辆主题, 孤立特写)。孤立特写=车辆主题+产品式机位+无场景词+无人物。"""
+    blob = " ".join([title or "", descr or "", tags or ""]).lower()
+    t = (title or "").lower()
+
+    vehicle = any(_hit(p, blob) for p in VEHICLE_RX)
+    product = bool(PRODUCT_SHOT_RX.search(t))
+    scene_like = any(_hit(p, t) for p in CAR_SCENE_RX)
+    # 产品式机位是强证据，但没有它、只要「车辆主题 + 无人物 + 无场景词」也算孤立
+    isolated = bool(vehicle and not scene_like and not person)
+    return (1 if vehicle else 0), (1 if isolated else 0)
+
+
+def is_junk_sign(title, descr):
+    """标识照：纯编号标题，或标题命中标识词且很短。"""
+    t = (title or "").strip()
+    tl = t.lower()
+    if not tl:
+        return 0
+    # 纯编号：M31 / H19 / P22 / B2
+    stem = re.sub(r"\.(jpe?g|png|gif|webp)$", "", tl).strip()
+    if SIGN_CODE_RX.match(stem):
+        return 1
+    # 命中标识词，且标题很短（避免误伤「街景里带招牌」的长标题）
+    if any(_hit(p, tl) for p in SIGN_RX) and len(t) <= 60:
+        return 1
+    # 弱信号：标题很短 + 无场景词
+    if (len(t) <= 35
+            and any(_hit(p, tl) for p in SIGN_WEAK_RX)
+            and not any(_hit(p, tl) for p in SIGN_SCENE_SAFE)):
+        return 1
+    return 0
+
+
+def is_gray_text(title, descr, tags):
+    """文本层的黑白线索（命中率极低，仅作补充）。"""
+    blob = " ".join([title or "", tags or ""]).lower()
+    return 1 if any(_hit(p, blob) for p in _build([
+        "black and white", "black-and-white", "monochrome", "grayscale",
+        "greyscale", "hitam putih", "b&w photo",
+    ])) else 0
+
 
 def person_flags(title, descr, scene):
     """返回 (自拍, 含人物, 单人人像)。单人人像排除群体场景，避免误杀合影。"""
@@ -559,12 +646,39 @@ MIGRATIONS = [
     "ALTER TABLE photos ADD COLUMN dated INTEGER DEFAULT 0",
     "ALTER TABLE photos ADD COLUMN flat REAL",
     "ALTER TABLE photos ADD COLUMN is_graphic INTEGER DEFAULT 0",
+    # 黑白 / 车辆特写 / 标识照
+    "ALTER TABLE photos ADD COLUMN sat_mean REAL",
+    "ALTER TABLE photos ADD COLUMN color_frac REAL",
+    "ALTER TABLE photos ADD COLUMN hue_conc REAL",
+    "ALTER TABLE photos ADD COLUMN dom_hue INTEGER",
+    "ALTER TABLE photos ADD COLUMN mono_corr REAL",
+    "ALTER TABLE photos ADD COLUMN is_gray INTEGER DEFAULT 0",
+    "ALTER TABLE photos ADD COLUMN sepia INTEGER DEFAULT 0",
+    "ALTER TABLE photos ADD COLUMN car_iso REAL",
+    "ALTER TABLE photos ADD COLUMN vehicle INTEGER DEFAULT 0",
+    "ALTER TABLE photos ADD COLUMN junk_sign INTEGER DEFAULT 0",
+    "ALTER TABLE photos ADD COLUMN enrich_at INTEGER",
+    "ALTER TABLE photos ADD COLUMN cat_checked INTEGER",
+    "ALTER TABLE photos ADD COLUMN cats TEXT",
 ]
 
 # 质量阈值
 MIN_PIXELS = 1000000      # 低于 100 万像素视为低清
 BLUR_THRESHOLD = 12.0     # 边缘强度低于此值视为模糊
 CORNER_RATIO = 1.9        # 角落边缘密度 / 中心边缘密度，超过则疑似水印
+
+# 黑白判定（先严后宽，改阈值用 recolor 纯 SQL 重算，不重扫）
+GRAY_COLOR_FRAC_MAX = 0.03    # 有色像素占比上限
+GRAY_SAT_MAX = 20.0           # 平均饱和度上限（0-255）
+GRAY_MONO_CORR_MIN = 0.990    # 三通道线性相关下限
+GRAY_HUE_CONC_MIN = 0.95      # 色相集中度下限
+GRAY_HUE_LO, GRAY_HUE_HI = 8, 48   # 褐调所在色相带
+GRAY_SEPIA_SAT_MAX = 90.0
+
+CAR_ISO_THRESHOLD = 60.0      # 孤立车辆得分阈值
+SIGN_UNIQ_MAX = 0.30          # 标识照唯一色上限
+SIGN_BORDER_DOM_MIN = 0.55    # 标识照边框主色占比下限
+SCAN_MIN_INTERVAL = 1.50      # 扫描全局最小请求间隔（秒），低于此值会触发 429
 
 
 def get_meta(key, default=""):
@@ -617,6 +731,10 @@ def upsert_photo(item, country_hint, tag):
                                     country_hint, fallback=tag or "")
     selfie, person, solo = person_flags(item.get("title", ""), item.get("descr", ""), scene)
     dated = is_dated(item.get("title", ""), item.get("descr", ""))
+    vehicle, car_iso_text = car_flags(item.get("title", ""), item.get("descr", ""),
+                                      tag, scene, person)
+    junk = is_junk_sign(item.get("title", ""), item.get("descr", ""))
+    gray_text = is_gray_text(item.get("title", ""), item.get("descr", ""), tag)
     w, h = item.get("w") or 0, item.get("h") or 0
     tkey = title_key(item.get("title", "")) or item.get("source_id", "")
     search_text = " ".join([
@@ -631,15 +749,17 @@ def upsert_photo(item, country_hint, tag):
                (source, source_id, title, descr, thumb, preview, full, page,
                 width, height, orientation, country, city, scene, tags,
                 license, artist, title_key, search_text,
-                selfie, person, solo, dated, saved, created_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
+                selfie, person, solo, dated, vehicle, junk_sign, car_iso,
+                is_gray, saved, created_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,0,?)""",
             (
                 item["source"], item["source_id"], item.get("title", ""),
                 item.get("descr", ""), item.get("thumb", ""), item.get("preview", ""),
                 item.get("full", ""), item.get("page", ""), w, h,
                 orientation_of(w, h), country, city, scene, tag or "",
                 item.get("license", ""), item.get("artist", ""), tkey,
-                search_text, selfie, person, solo, dated, int(time.time()),
+                search_text, selfie, person, solo, dated, vehicle, junk,
+                100 if car_iso_text else 0, gray_text, int(time.time()),
             ),
         )
         conn.commit()
@@ -1279,14 +1399,20 @@ def reclassify_all():
                                         r["country"], fallback=r["tags"] or "")
         selfie, person, solo = person_flags(r["title"], r["descr"], scene)
         dated = is_dated(r["title"], r["descr"])
+        vehicle, car_iso_text = car_flags(r["title"], r["descr"], r["tags"], scene, person)
+        junk = is_junk_sign(r["title"], r["descr"])
+        gray_text = is_gray_text(r["title"], r["descr"], r["tags"])
         search_text = " ".join([
             r["title"] or "", r["descr"] or "", r["tags"] or "",
             country, city, scene,
         ]).lower()
         conn.execute(
             "UPDATE photos SET country=?, city=?, scene=?, search_text=?, "
-            "selfie=?, person=?, solo=?, dated=? WHERE id=?",
-            (country, city, scene, search_text, selfie, person, solo, dated, r["id"]),
+            "selfie=?, person=?, solo=?, dated=?, vehicle=?, junk_sign=?, "
+            "car_iso=MAX(COALESCE(car_iso,0), ?), "
+            "is_gray=MAX(COALESCE(is_gray,0), ?) WHERE id=?",
+            (country, city, scene, search_text, selfie, person, solo, dated,
+             vehicle, junk, 100 if car_iso_text else 0, gray_text, r["id"]),
         )
         n += 1
     conn.commit()
@@ -1518,6 +1644,386 @@ def scan_graphics(scene=None, limit=None, workers=6):
 
     print("检测完成 %d 张，其中二维图形 %d 张" % (done, flagged), flush=True)
     return done
+
+
+# ---------------------------------------------------------------------------
+# 黑白 / 孤立车辆 / 标识照：图像分析
+# ---------------------------------------------------------------------------
+_scan_lock = threading.Lock()
+_scan_last = [0.0]
+_scan_gap = [SCAN_MIN_INTERVAL]
+
+
+def _pace():
+    """全局节流：保证两次请求起始间隔不小于 _scan_gap。"""
+    with _scan_lock:
+        wait = _scan_last[0] + _scan_gap[0] - time.monotonic()
+        if wait > 0:
+            time.sleep(wait)
+        _scan_last[0] = time.monotonic()
+
+
+def analyze_color(data):
+    """黑白判定指标。必须走 RGB——analyze_image 一开始就转 L，颜色信息已丢。"""
+    import io
+    import math
+    from collections import Counter
+
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    im.thumbnail((250, 250))
+    small = im.copy()
+    small.thumbnail((64, 64))
+
+    rgb = list(small.getdata())
+    n = len(rgb)
+    if not n:
+        return None
+    rs = [p[0] for p in rgb]
+    gs = [p[1] for p in rgb]
+    bs = [p[2] for p in rgb]
+    mr, mg, mb = sum(rs) / n, sum(gs) / n, sum(bs) / n
+
+    def corr(a, b, ma, mb):
+        sa = math.sqrt(sum((x - ma) ** 2 for x in a) / n)
+        sb = math.sqrt(sum((x - mb) ** 2 for x in b) / n)
+        if sa < 1e-6 or sb < 1e-6:
+            return 1.0
+        return sum((a[i] - ma) * (b[i] - mb) for i in range(n)) / (n * sa * sb)
+
+    hh, ss, _vv = small.convert("HSV").split()
+    H = list(hh.getdata())
+    S = list(ss.getdata())
+    sat_mean = sum(S) / n
+    color_frac = sum(1 for v in S if v >= 50) / n
+
+    bins = Counter()
+    for h, v in zip(H, S):
+        if v >= 50:
+            bins[h * 24 // 256] += 1
+    tot = sum(bins.values())
+    if tot:
+        top = bins.most_common(1)[0][0]
+        hue_conc = sum(c for k, c in bins.items() if abs(k - top) <= 1) / tot
+        dom_hue = top * 15
+    else:
+        hue_conc, dom_hue = 0.0, -1
+
+    return {
+        "sat_mean": round(sat_mean, 1),
+        "color_frac": round(color_frac, 3),
+        "hue_conc": round(hue_conc, 2),
+        "dom_hue": dom_hue,
+        "mono_corr": round(min(corr(rs, gs, mr, mg), corr(rs, bs, mr, mb)), 4),
+    }
+
+
+def analyze_layout(data):
+    """孤立主体 / 标识特写的布局特征。"""
+    import io
+    from collections import Counter
+
+    from PIL import Image, ImageFilter, ImageStat
+
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    im.thumbnail((320, 320))
+    w, h = im.size
+    if w < 40 or h < 40:
+        return None
+
+    edges = im.convert("L").filter(ImageFilter.FIND_EDGES)
+    cx0, cy0, cx1, cy1 = w * 2 // 10, h * 2 // 10, w * 8 // 10, h * 8 // 10
+    center = ImageStat.Stat(edges.crop((cx0, cy0, cx1, cy1))).mean[0]
+    whole = ImageStat.Stat(edges).mean[0]
+    center_share = (center + 1e-6) / (whole + 1e-6) / 0.36
+
+    small = im.copy()
+    small.thumbnail((64, 64))
+    sw, sh = small.size
+    px = list(small.getdata())
+    ring = []
+    for y in range(sh):
+        for x in range(sw):
+            if x < 4 or y < 4 or x >= sw - 4 or y >= sh - 4:
+                q = small.getpixel((x, y))
+                ring.append((q[0] >> 3, q[1] >> 3, q[2] >> 3))
+    border_dom = Counter(ring).most_common(1)[0][1] / len(ring) if ring else 0
+    uniq = len(set(px)) / len(px) if px else 0
+
+    return {
+        "center_share": round(center_share, 3),
+        "border_dom": round(border_dom, 3),
+        "uniq": round(uniq, 3),
+    }
+
+
+def gray_verdict(m):
+    """返回 (is_gray, sepia)。四条件缺一不可，单指标极易误判。"""
+    if not m:
+        return 0, 0
+    if m["color_frac"] < GRAY_COLOR_FRAC_MAX and m["sat_mean"] < GRAY_SAT_MAX:
+        return 1, 0
+    if (m["mono_corr"] >= GRAY_MONO_CORR_MIN
+            and m["hue_conc"] >= GRAY_HUE_CONC_MIN
+            and GRAY_HUE_LO <= m["dom_hue"] <= GRAY_HUE_HI
+            and m["sat_mean"] <= GRAY_SEPIA_SAT_MAX):
+        return 1, 1
+    return 0, 0
+
+
+def car_verdict(lay, person):
+    if not lay or person:
+        return 0.0
+    score = 0.0
+    if lay["center_share"] >= 1.05:
+        score += 35
+    if lay["border_dom"] >= 0.40:
+        score += 35
+    if lay["uniq"] <= 0.45:
+        score += 30
+    return score
+
+
+def sign_verdict(lay):
+    if not lay:
+        return 0
+    if (lay["uniq"] <= SIGN_UNIQ_MAX
+            and lay["border_dom"] >= SIGN_BORDER_DOM_MIN
+            and lay["center_share"] <= 0.90):
+        return 1
+    return 0
+
+
+def enrich_scan(limit=None, scene=None, workers=1, only="all"):
+    """一次下载同时算黑白、布局、标识三类指标，支持断点续跑。"""
+    from concurrent.futures import ThreadPoolExecutor
+
+    conn = db()
+    sql = """
+      SELECT id, thumb, title, COALESCE(tags,'') AS tags, scene,
+             COALESCE(person,0) AS person, COALESCE(is_gray,0) AS is_gray,
+             COALESCE(junk_sign,0) AS junk_sign, COALESCE(car_iso,0) AS car_iso,
+             CASE
+               WHEN lower(COALESCE(tags,'')||' '||COALESCE(title,'')) LIKE '%automobile%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')) LIKE '%mobil%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')) LIKE '%motor%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')) LIKE '%parkir%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')) LIKE '%parking%'
+                 THEN 0
+               WHEN lower(COALESCE(tags,'')||' '||COALESCE(title,'')||' '||COALESCE(descr,''))
+                    LIKE '%dutch east indies%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')||' '||COALESCE(descr,''))
+                    LIKE '%batavia%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')||' '||COALESCE(descr,''))
+                    LIKE '%kitlv%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')||' '||COALESCE(descr,''))
+                    LIKE '%tropenmuseum%'
+                 OR lower(COALESCE(tags,'')||' '||COALESCE(title,'')||' '||COALESCE(descr,''))
+                    LIKE '%colonial%'
+                 THEN 1
+               WHEN scene IN ('人文','建筑','街景') THEN 2
+               ELSE 3 END AS prio
+      FROM photos WHERE enrich_at IS NULL
+    """
+    args = []
+    if scene:
+        sql += " AND scene=?"
+        args.append(scene)
+    if only == "car":
+        sql += " AND COALESCE(vehicle,0)=1"
+    elif only == "sign":
+        sql += " AND COALESCE(junk_sign,0)=1"
+    sql += " ORDER BY prio, id"
+    if limit:
+        sql += " LIMIT %d" % int(limit)
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    print("待扫描 %d 张（%d 线程，模式 %s）" % (len(rows), workers, only), flush=True)
+    if not rows:
+        return 0
+
+    def probe(row):
+        url = row["thumb"] or ""
+        if not url:
+            return row, None, None
+        for attempt in ("direct", "wsrv"):
+            try:
+                _pace()
+                if attempt == "direct":
+                    if url.lower().endswith((".tiff", ".tif")):
+                        raise ValueError("tiff")
+                    # retries=1：遇到 429 立刻切备用通道，不在直连上死等
+                    data = http_get(thumbify(url, 250), timeout=20, retries=1)
+                else:
+                    data = http_get(wsrv(url, 250), timeout=30, retries=1)
+                m = analyze_color(data)
+                lay = analyze_layout(data)
+                _scan_gap[0] = max(SCAN_MIN_INTERVAL, _scan_gap[0] * 0.98)
+                return row, m, lay
+            except Exception:
+                _scan_gap[0] = min(2.0, _scan_gap[0] * 1.6)
+                continue
+        return row, None, None
+
+    done = failed = g_cnt = c_cnt = s_cnt = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for row, m, lay in pool.map(probe, rows):
+            if m is None:
+                failed += 1
+                continue
+            g, sep = gray_verdict(m)
+            g = max(g, row["is_gray"])
+            c = max(car_verdict(lay, row["person"]), row["car_iso"])
+            j = max(sign_verdict(lay), row["junk_sign"])
+            conn = db()
+            conn.execute(
+                "UPDATE photos SET sat_mean=?, color_frac=?, hue_conc=?, dom_hue=?, "
+                "mono_corr=?, is_gray=?, sepia=MAX(COALESCE(sepia,0),?), car_iso=?, "
+                "junk_sign=?, flat=?, enrich_at=? WHERE id=?",
+                (m["sat_mean"], m["color_frac"], m["hue_conc"], m["dom_hue"],
+                 m["mono_corr"], g, sep, c, j,
+                 lay["uniq"] if lay else None, int(time.time()), row["id"]),
+            )
+            conn.commit()
+            conn.close()
+            done += 1
+            g_cnt += 1 if g else 0
+            c_cnt += 1 if c >= CAR_ISO_THRESHOLD else 0
+            s_cnt += j
+            if done % 100 == 0:
+                print("  已扫 %d/%d 黑白 %d 车辆 %d 标识 %d 失败 %d（间隔 %.2fs）"
+                      % (done, len(rows), g_cnt, c_cnt, s_cnt, failed, _scan_gap[0]),
+                      flush=True)
+
+    set_meta("last_enrich_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    _facets_cache.clear()
+    print("扫描完成 %d 张，失败 %d；黑白 %d，车辆特写 %d，标识 %d"
+          % (done, failed, g_cnt, c_cnt, s_cnt), flush=True)
+    return done
+
+
+def recolor():
+    """用已存的指标按当前阈值重算黑白/标识判定，不联网。"""
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, sat_mean, color_frac, hue_conc, dom_hue, mono_corr, "
+        "car_iso, person FROM photos WHERE sat_mean IS NOT NULL"
+    ).fetchall()
+    g_n = 0
+    for r in rows:
+        m = {"sat_mean": r["sat_mean"] or 0, "color_frac": r["color_frac"] or 0,
+             "hue_conc": r["hue_conc"] or 0, "dom_hue": r["dom_hue"] if r["dom_hue"] is not None else -1,
+             "mono_corr": r["mono_corr"] or 0}
+        g, sep = gray_verdict(m)
+        conn.execute("UPDATE photos SET is_gray=?, sepia=? WHERE id=?", (g, sep, r["id"]))
+        g_n += g
+    conn.commit()
+    conn.close()
+    _facets_cache.clear()
+    print("重算 %d 张，黑白 %d" % (len(rows), g_n), flush=True)
+    return g_n
+
+
+def calibrate(kind="gray", n=300):
+    """抽样打印指标分布，用于定阈值。"""
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title, sat_mean, color_frac, hue_conc, dom_hue, mono_corr "
+        "FROM photos WHERE sat_mean IS NOT NULL ORDER BY RANDOM() LIMIT %d" % int(n)
+    ).fetchall()
+    conn.close()
+    print("样本 %d 张" % len(rows))
+    if kind == "gray":
+        rows = sorted(rows, key=lambda r: (r["mono_corr"] or 0), reverse=True)
+        print("%-6s %-7s %-7s %-7s %-5s %s" % ("corr", "hue_c", "sat", "cfrac", "hue", "title"))
+        for r in rows[:40]:
+            print("%-6.3f %-7.2f %-7.1f %-7.3f %-5s %s" % (
+                r["mono_corr"] or 0, r["hue_conc"] or 0, r["sat_mean"] or 0,
+                r["color_frac"] or 0, r["dom_hue"], (r["title"] or "")[:44]))
+    return len(rows)
+
+
+# ---------------------------------------------------------------------------
+# 按 Commons 分类批量判定（走 api.php，不下载图片，比逐张分析快两个数量级）
+# ---------------------------------------------------------------------------
+CAT_GRAY = ["black and white photographs", "black-and-white photographs",
+            "black and white", "sepia", "monochrome photographs", "monochrome"]
+CAT_SIGN = ["signs", "signage", "signboards", "street signs", "traffic signs",
+            "shop signs", "nameplates", "plaques", "billboards", "road signs",
+            "house numbers", "information boards", "notice boards"]
+CAT_CAR = ["automobiles", "cars", "vehicles", "motorcycles", "scooters",
+           "car parks", "parking lots"]
+
+
+def scan_categories(pause=0.8):
+    """批量查每个文件的 Commons 分类，命中黑白/标识/车辆关键词就打标记。
+
+    零误判（分类是人工维护的），一次请求 50 个文件。
+    """
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title FROM photos WHERE cat_checked IS NULL"
+    ).fetchall()
+    conn.close()
+    print("待查分类 %d 个文件" % len(rows), flush=True)
+    if not rows:
+        return 0
+
+    total = g_cnt = s_cnt = c_cnt = 0
+    for i in range(0, len(rows), 50):
+        chunk = rows[i:i + 50]
+        titles = ["File:" + r["title"] for r in chunk if r["title"]]
+        if not titles:
+            continue
+        params = {
+            "action": "query", "format": "json",
+            "titles": "|".join(titles),
+            "prop": "categories", "cllimit": "50", "clshow": "!hidden",
+        }
+        url = "https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(params)
+        try:
+            raw = json.loads(http_get(url, timeout=30, retries=2).decode("utf-8"))
+        except Exception as e:
+            print("  批次失败: %s" % str(e)[:40], flush=True)
+            time.sleep(5)
+            continue
+
+        by_title = {}
+        for _pid, pg in ((raw.get("query") or {}).get("pages") or {}).items():
+            cats = " | ".join(c["title"] for c in pg.get("categories", []))
+            by_title[pg.get("title", "")] = cats
+
+        conn = db()
+        for r in chunk:
+            cats = by_title.get("File:" + r["title"], "")
+            if not cats:
+                continue          # 没拿到分类就不动，留待下次
+            cl = cats.lower()
+            g = 1 if any(_hit(k, cl) for k in CAT_GRAY) else 0
+            j = 1 if any(_hit(k, cl) for k in CAT_SIGN) else 0
+            c = 1 if any(_hit(k, cl) for k in CAT_CAR) else 0
+            conn.execute(
+                "UPDATE photos SET is_gray=MAX(COALESCE(is_gray,0),?), "
+                "junk_sign=MAX(COALESCE(junk_sign,0),?), "
+                "vehicle=MAX(COALESCE(vehicle,0),?), cats=?, cat_checked=? WHERE id=?",
+                (g, j, c, cats, int(time.time()), r["id"]),
+            )
+            g_cnt += g
+            s_cnt += j
+            c_cnt += c
+        conn.commit()
+        conn.close()
+        total += len(chunk)
+        if total % 1000 == 0:
+            print("  已查 %d/%d，黑白 %d 标识 %d 车辆 %d"
+                  % (total, len(rows), g_cnt, s_cnt, c_cnt), flush=True)
+        time.sleep(pause)
+
+    _facets_cache.clear()
+    print("分类查询完成 %d 个，黑白 %d，标识 %d，车辆 %d"
+          % (total, g_cnt, s_cnt, c_cnt), flush=True)
+    return total
 
 
 def quality_scan(limit=None, pause=0.35):
@@ -2070,7 +2576,8 @@ def expand_token(t):
 def search_photos(q, country="", city="", scene="", orient="", only_saved=False,
                   page=1, per=24, min_pixels=0, hide_blur=False, hide_wm=False,
                   hide_selfie=False, hide_solo=False, hide_dated=False,
-                  hide_people=False, hide_graphic=False):
+                  hide_people=False, hide_graphic=False,
+                  hide_gray=False, hide_car=False, hide_junk=False):
     """精确优先的检索：全部关键词命中才算精确匹配；否则降级为弱匹配并显式标注。"""
     conn = db()
     where, args = ["hidden=0"], []
@@ -2100,6 +2607,13 @@ def search_photos(q, country="", city="", scene="", orient="", only_saved=False,
         where.append("COALESCE(wm_suspect,0)=0")
     if hide_graphic:
         where.append("COALESCE(is_graphic,0)=0")
+    if hide_gray:
+        where.append("COALESCE(is_gray,0)=0")
+    if hide_car:
+        where.append("COALESCE(car_iso,0) < ?")
+        args.append(CAR_ISO_THRESHOLD)
+    if hide_junk:
+        where.append("COALESCE(junk_sign,0)=0")
     if hide_blur:
         where.append("(blur_score IS NULL OR blur_score >= ?)")
         args.append(BLUR_THRESHOLD)
@@ -2232,6 +2746,21 @@ def facets(country=""):
         "graphic": conn.execute(
             "SELECT COUNT(*) c FROM photos WHERE hidden=0 AND COALESCE(is_graphic,0)=1"
         ).fetchone()["c"],
+        "gray": conn.execute(
+            "SELECT COUNT(*) c FROM photos WHERE hidden=0 AND COALESCE(is_gray,0)=1"
+        ).fetchone()["c"],
+        "sepia": conn.execute(
+            "SELECT COUNT(*) c FROM photos WHERE hidden=0 AND COALESCE(sepia,0)=1"
+        ).fetchone()["c"],
+        "car": conn.execute(
+            "SELECT COUNT(*) c FROM photos WHERE hidden=0 AND COALESCE(car_iso,0) >= ?",
+            (CAR_ISO_THRESHOLD,)).fetchone()["c"],
+        "junk": conn.execute(
+            "SELECT COUNT(*) c FROM photos WHERE hidden=0 AND COALESCE(junk_sign,0)=1"
+        ).fetchone()["c"],
+        "scanned": conn.execute(
+            "SELECT COUNT(*) c FROM photos WHERE enrich_at IS NOT NULL AND enrich_at > 0"
+        ).fetchone()["c"],
         "checked": conn.execute(
             "SELECT COUNT(*) c FROM photos WHERE checked_at IS NOT NULL").fetchone()["c"],
     }
@@ -2355,6 +2884,9 @@ class Handler(BaseHTTPRequestHandler):
                     hide_dated=one("nodate") == "1",
                     hide_people=one("nopeople") == "1",
                     hide_graphic=one("nogfx") == "1",
+                    hide_gray=one("nogray") == "1",
+                    hide_car=one("nocar") == "1",
+                    hide_junk=one("nojunk") == "1",
                 ))
 
             if path == "/api/hide":
@@ -2486,6 +3018,23 @@ def main():
         if cmd == "mediatype":
             scan_mediatype()
             return
+        if cmd == "enrich":
+            enrich_scan(limit=int(sys.argv[2]) if len(sys.argv) > 2 else None,
+                        scene=sys.argv[3] if len(sys.argv) > 3 else None)
+            return
+        if cmd in ("gray", "car", "sign"):
+            enrich_scan(only=cmd)
+            return
+        if cmd == "cats":
+            scan_categories()
+            return
+        if cmd == "recolor":
+            recolor()
+            return
+        if cmd == "calibrate":
+            calibrate(sys.argv[2] if len(sys.argv) > 2 else "gray",
+                      int(sys.argv[3]) if len(sys.argv) > 3 else 300)
+            return
         if cmd == "refix":
             refix_thumbs()
             return
@@ -2523,6 +3072,16 @@ def main():
             for r in by_c:
                 print("  %s  %d" % (r["country"], r["c"]))
             print("质量检测已完成 %d 张" % checked)
+            conn2 = db()
+            for label, sql in [
+                ("已扫描", "SELECT COUNT(*) c FROM photos WHERE enrich_at IS NOT NULL AND enrich_at > 0"),
+                ("黑白照", "SELECT COUNT(*) c FROM photos WHERE COALESCE(is_gray,0)=1"),
+                ("其中褐调", "SELECT COUNT(*) c FROM photos WHERE COALESCE(sepia,0)=1"),
+                ("车辆特写", "SELECT COUNT(*) c FROM photos WHERE COALESCE(car_iso,0) >= %s" % CAR_ISO_THRESHOLD),
+                ("标识照", "SELECT COUNT(*) c FROM photos WHERE COALESCE(junk_sign,0)=1"),
+            ]:
+                print("%s %d 张" % (label, conn2.execute(sql).fetchone()["c"]))
+            conn2.close()
             print("上次更新 %s · 上次扩充 %s"
                   % (get_meta("last_update_at", "-"), get_meta("last_expand_at", "-")))
             return
