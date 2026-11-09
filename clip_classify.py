@@ -82,33 +82,49 @@ SCENE_PROMPTS = {
 }
 
 # 质量标记：每个对应一组正/负描述
+# 负类用一组「普通照片」的泛描述，而不是单个对照句。
+# 单个对照句会让「既不像正类也不像负类」的图被强行判成正类（海滩照被判成车辆产品图）。
+NEG_PHOTOS = [
+    "a wide landscape or beach scene",
+    "a photo of people walking or standing",
+    "a photo of food on a table",
+    "a photo of a building or street",
+    "a photo of an animal or plant",
+    "a photo of an indoor room",
+]
+
 QUALITY_PROMPTS = {
     "gray": (
         ["a black and white photograph", "a sepia toned old historical photograph",
          "a grayscale monochrome picture"],
-        ["a colorful vibrant photograph", "a photo with bright saturated colors"],
+        NEG_PHOTOS,
     ),
     "graphic": (
         ["a flat vector illustration or cartoon graphic",
          "a digital drawing, infographic or diagram",
          "a poster with flat colors and text"],
-        ["a real photograph taken with a camera"],
+        ["a real photograph taken with a camera"] + NEG_PHOTOS,
     ),
     "sign": (
         ["a close-up photo of a sign, signboard, nameplate or number",
-         "a photo dominated by a road sign or shop sign"],
-        ["a photo of a wide scene with people and buildings"],
+         "a photo dominated by a road sign or shop sign",
+         "text painted on a wall or a notice board filling the frame"],
+        NEG_PHOTOS,
     ),
     "product": (
         ["a single car or motorcycle photographed alone as a product shot",
-         "an isolated vehicle on a plain background"],
-        ["a street scene with traffic, people and buildings"],
+         "an isolated vehicle filling the frame on a plain background",
+         "a vehicle catalogue photo with no people around"],
+        NEG_PHOTOS,
     ),
 }
 
 _lock = threading.Lock()
 _last = [0.0]
-_gap = [2.5]
+_gap = [1.2]
+# 各标记的判定余量。黑白不走 CLIP——它会把「白墙/灰背景/黑白车身」误判成黑白照，
+# 改由像素级饱和度分析判定（图片已在内存里，不额外联网）。
+FLAG_MARGIN = {"sign": 0.50, "product": 0.55, "graphic": 0.75}
 
 
 def pace():
@@ -142,26 +158,37 @@ def load_model():
 
     quality = {}
     for key, (pos, neg) in QUALITY_PROMPTS.items():
-        quality[key] = (encode(pos), encode(neg))
+        pos_e, neg_e = encode(pos), encode(neg)
+        # 正负提示词拼在一起做一次 softmax，才能公平比较两边概率
+        quality[key] = (torch.cat([pos_e, neg_e]), pos_e.shape[0])
 
     return model, preprocess, scene_names, scene_feat, quality
 
 
-def fetch_thumb(url, width=250):
-    """取 250px 缩略图，直连失败切 wsrv。"""
-    for attempt in ("direct", "wsrv"):
+def fetch_thumb(url, width=250, title=""):
+    """取缩略图。优先走 commons 的 thumb.php——它和 upload CDN 是不同的限流池，
+    实测成功率 8/8 vs 5/8，是当前最主要的提速手段。"""
+    def get(u, timeout=20):
+        req = urllib.request.Request(u, headers={"User-Agent": S.UA})
+        d = urllib.request.urlopen(req, timeout=timeout).read()
+        if len(d) < 1000:
+            raise ValueError("too small")
+        return d
+
+    if url.lower().endswith((".tiff", ".tif")):
+        return None
+
+    channels = []
+    if title:
+        channels.append(("thumb.php", "https://commons.wikimedia.org/w/thumb.php?f="
+                         + urllib.parse.quote(title) + "&w=%d" % width))
+    channels.append(("direct", S.thumbify(url, width)))
+    channels.append(("wsrv", S.wsrv(url, width)))
+
+    for name, u in channels:
         try:
             pace()
-            if attempt == "direct":
-                if url.lower().endswith((".tiff", ".tif")):
-                    raise ValueError("tiff")
-                u = S.thumbify(url, width)
-                req = urllib.request.Request(u, headers={"User-Agent": S.UA})
-                return urllib.request.urlopen(req, timeout=20).read()
-            else:
-                u = S.wsrv(url, width)
-                req = urllib.request.Request(u, headers={"User-Agent": S.UA})
-                return urllib.request.urlopen(req, timeout=25).read()
+            return get(u, 25 if name == "wsrv" else 20)
         except Exception:
             _gap[0] = min(3.0, _gap[0] * 1.5)
             continue
@@ -208,7 +235,7 @@ def main():
     done = failed = streak = 0
     started = time.time()
     for r in rows:
-        data = fetch_thumb(r["thumb"])
+        data = fetch_thumb(r["thumb"], title=r["title"])
         if not data:
             failed += 1
             streak += 1
@@ -234,12 +261,22 @@ def main():
             scene = scene_names[idx] if score >= 0.30 else "其他"
 
             flags = {}
-            for key, (pos, neg) in quality.items():
-                sc = model.logit_scale.exp()
-                ps = (sc * (f @ pos.T)).softmax(dim=-1)[0].max().item()
-                ns = (sc * (f @ neg.T)).softmax(dim=-1)[0].max().item()
-                # 要求正类明显胜出，避免模棱两可的图被误标
-                flags[key] = 1 if ps - ns > 0.25 else 0
+            sc = model.logit_scale.exp()
+            for key, (both, n_pos) in quality.items():
+                if key == "gray":
+                    continue
+                probs = (sc * (f @ both.T)).softmax(dim=-1)[0]
+                p_pos = float(probs[:n_pos].sum())
+                p_neg = float(probs[n_pos:].sum())
+                flags[key] = 1 if p_pos - p_neg > FLAG_MARGIN.get(key, 0.5) else 0
+
+            # 黑白：用像素饱和度判定，比 CLIP 提示词准得多
+            flags["gray"] = 0
+            try:
+                m = S.analyze_color(data)
+                flags["gray"] = S.gray_verdict(m)[0]
+            except Exception:
+                pass
 
             conn = S.db()
             conn.execute(
