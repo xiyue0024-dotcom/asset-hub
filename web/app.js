@@ -5,22 +5,32 @@ const state = {
   q: '', country: '', city: '', scene: '', orient: '',
   saved: false, page: 1, per: 24, total: 0, items: [], loading: false, idx: -1,
   mode: 'browse', ingested: 0,
-  minpx: 1000000, nowm: true, noselfie: true, noblur: false,
+  minpx: 1000000, nowm: true, noselfie: true, noblur: false, nogfx: true,
 };
 
 const esc = (s) => String(s == null ? '' : s)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
   .replace(/"/g, '&quot;');
 
-// 图片直连 CDN，比走本地代理快一个数量级；代理只作为加载失败时的兜底
-const imgUrl = (u) => u || '';
+// 印尼/新加坡访问 Wikimedia CDN 本来就快，默认直连；
+// 加 ?cdn=wsrv 可强制走第三方图片代理做对比
+const FORCE_PROXY = new URLSearchParams(location.search).get('cdn') === 'wsrv';
+const wsrvUrl = (u, w) => u
+  ? 'https://wsrv.nl/?url=' + encodeURIComponent(u) + '&w=' + w + '&output=webp&q=78'
+  : '';
+const imgUrl = (u, w) => (FORCE_PROXY ? wsrvUrl(u, w || 400) : (u || ''));
 const proxyUrl = (u) => '/img?u=' + encodeURIComponent(u || '');
 
-// 图片加载失败时自动降级到本地代理
+// 三级降级：CDN → 直连 → 本地代理
 document.addEventListener('error', (e) => {
   const img = e.target;
-  if (img && img.tagName === 'IMG' && img.dataset.fb && img.src !== img.dataset.fb) {
-    img.src = img.dataset.fb;
+  if (!img || img.tagName !== 'IMG') return;
+  const fb1 = img.dataset.fb, fb2 = img.dataset.fb2;
+  if (fb1 && img.src !== fb1 && !img.dataset.t1) {
+    img.dataset.t1 = '1';
+    img.src = fb1;
+  } else if (fb2 && img.src !== fb2) {
+    img.src = fb2;
   }
 }, true);
 
@@ -51,7 +61,7 @@ async function loadFacets() {
 
   const q = f.quality || {};
   $('#qinfo').textContent =
-    `低清 ${q.lowres || 0} · 疑似水印 ${q.wm || 0} · 人物 ${q.people || 0}` +
+    `低清 ${q.lowres || 0} · 疑似水印 ${q.wm || 0} · 插画 ${q.graphic || 0} · 人物 ${q.people || 0}` +
     (q.checked ? ` · 已检测 ${q.checked}` : '');
 
   const sel = $('#citySel');
@@ -89,6 +99,7 @@ function queryParams() {
     nowm: state.nowm ? '1' : '',
     noselfie: state.noselfie ? '1' : '',
     noblur: state.noblur ? '1' : '',
+    nogfx: state.nogfx ? '1' : '',
   };
 }
 
@@ -200,7 +211,8 @@ function cardHTML(p, i) {
     : `<span class="lic">${esc(p.license || '')}</span>`;
   const ar = (p.width && p.height) ? ` style="aspect-ratio:${p.width}/${p.height}"` : '';
   return `<figure class="card${p.weak ? ' weak' : ''}" data-i="${i}">
-    <img src="${esc(thumb)}" data-fb="${esc(proxyUrl(thumb))}" alt="${esc(p.title)}"
+    <img src="${esc(imgUrl(thumb, 400))}" data-fb="${esc(FORCE_PROXY ? thumb : wsrvUrl(thumb, 400))}"
+         data-fb2="${esc(proxyUrl(thumb))}" alt="${esc(p.title)}"
          loading="lazy" decoding="async"${ar}>
     ${badge}
     <button class="fav ${p.saved ? 'on' : ''}" data-id="${p.id}" data-saved="${p.saved ? 1 : 0}"
@@ -254,8 +266,9 @@ function renderLB() {
   if (!p) return closeLB();
 
   const img = $('#lbImg');
-  img.onerror = () => { img.onerror = null; img.src = proxyUrl(p.thumb); };
-  img.src = imgUrl(p.preview || p.thumb);
+  const pv = p.preview || p.thumb;
+  img.onerror = () => { img.onerror = null; img.src = pv; };
+  img.src = imgUrl(pv, 1200);
   img.alt = p.title || '';
 
   $('#lbTitle').textContent = p.title || '未命名素材';
@@ -387,6 +400,7 @@ $('#optHd').addEventListener('change', (e) => {
 $('#optWm').addEventListener('change', (e) => { state.nowm = e.target.checked; search(true); });
 $('#optSelfie').addEventListener('change', (e) => { state.noselfie = e.target.checked; search(true); });
 $('#optBlur').addEventListener('change', (e) => { state.noblur = e.target.checked; search(true); });
+$('#optGfx').addEventListener('change', (e) => { state.nogfx = e.target.checked; search(true); });
 
 $('#moreBtn').addEventListener('click', () => { state.page++; search(false); });
 

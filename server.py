@@ -389,6 +389,21 @@ REJECT = ["crete", "greece", "greek", "bali, rajasthan", "bali (india)",
           "bali india", "bali, india", "poster", "stage production", "film still",
           "statelibqld"]
 
+# 二维图形 / 插画：文字线索
+GRAPHIC_WORDS = [
+    "illustration", "illustrated", "drawing", "vector", "vectorised", "vectorized",
+    "cartoon", "clipart", "clip art", "sketch", "artwork", "painting", "watercolor",
+    "watercolour", "diagram", "infographic", "chart", "graph", "flat design",
+    "icon", "logo", "emblem", "silhouette", "rendering", "3d render", "mockup",
+    "map of", "floor plan", "coat of arms", "flag of", "stamp of", "banknote",
+]
+GRAPHIC_RX = _build(GRAPHIC_WORDS)
+
+
+def is_graphic_text(text):
+    t = (text or "").lower()
+    return any(_hit(p, t) for p in GRAPHIC_RX)
+
 # 境外地点黑名单：通用关键词（如 "Singapore cafe"）会捞回全球的结果，这里剔掉
 FOREIGN = [
     "manhattan", "brooklyn", "queensland", "australia", "new york", "london", "paris",
@@ -469,6 +484,8 @@ def is_rejected(text):
     t = (text or "").lower()
     if any(k in t for k in REJECT):
         return True
+    if is_graphic_text(t):
+        return True
     if FOREIGN_RX and any(_hit(p, t) for p in FOREIGN_RX):
         return True
     # 中文标题但完全没有印尼/新加坡信号：多为港澳台或内地的同题材照片
@@ -540,6 +557,8 @@ MIGRATIONS = [
     "ALTER TABLE photos ADD COLUMN person INTEGER DEFAULT 0",
     "ALTER TABLE photos ADD COLUMN solo INTEGER DEFAULT 0",
     "ALTER TABLE photos ADD COLUMN dated INTEGER DEFAULT 0",
+    "ALTER TABLE photos ADD COLUMN flat REAL",
+    "ALTER TABLE photos ADD COLUMN is_graphic INTEGER DEFAULT 0",
 ]
 
 # 质量阈值
@@ -1375,6 +1394,132 @@ def analyze_image(data):
     return round(blur, 2), round(ratio, 2)
 
 
+def wsrv(url, width=250):
+    """通过 wsrv.nl 取图，避开 Wikimedia 的限流。"""
+    return ("https://wsrv.nl/?url=" + urllib.parse.quote(url or "", safe="")
+            + "&w=%d&output=jpg&q=70" % width)
+
+
+def analyze_flatness(data):
+    """返回 (唯一色比例, 主色占比)。矢量插画前者极低、后者很高。"""
+    import io
+    from collections import Counter
+
+    from PIL import Image
+
+    im = Image.open(io.BytesIO(data)).convert("RGB")
+    im.thumbnail((64, 64))
+    px = list(im.getdata())
+    n = len(px)
+    uniq = len(set(px))
+    dom = Counter(px).most_common(1)[0][1]
+    return round(uniq / n, 3), round(dom / n, 3)
+
+
+def scan_mediatype(pause=1.2):
+    """用 Commons 的 mediatype 字段判定二维图形（DRAWING/SVG），无需下载图片。
+
+    比逐张下载分析快两个数量级：50 个标题一次请求。
+    """
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title FROM photos WHERE is_graphic IS NULL OR is_graphic = 0"
+    ).fetchall()
+    conn.close()
+    print("待检查 %d 条" % len(rows), flush=True)
+
+    total = flagged = 0
+    for i in range(0, len(rows), 50):
+        chunk = rows[i:i + 50]
+        titles = ["File:" + r["title"] for r in chunk if r["title"]]
+        if not titles:
+            continue
+        params = {
+            "action": "query", "format": "json",
+            "titles": "|".join(titles),
+            "prop": "imageinfo", "iiprop": "mediatype|mime",
+        }
+        url = "https://commons.wikimedia.org/w/api.php?" + urllib.parse.urlencode(params)
+        try:
+            raw = json.loads(http_get(url).decode("utf-8"))
+        except Exception as e:
+            print("  批次失败: %s" % e, flush=True)
+            time.sleep(3)
+            continue
+
+        by_title = {}
+        for pid, pg in ((raw.get("query") or {}).get("pages") or {}).items():
+            ii = (pg.get("imageinfo") or [{}])[0]
+            by_title[pg.get("title", "")] = (ii.get("mediatype", ""), ii.get("mime", ""))
+
+        conn = db()
+        for r in chunk:
+            mt, mime = by_title.get("File:" + r["title"], ("", ""))
+            g = 1 if (mt in ("DRAWING", "MULTIMEDIA") or "svg" in mime) else 0
+            conn.execute("UPDATE photos SET is_graphic=? WHERE id=?", (g, r["id"]))
+            flagged += g
+        conn.commit()
+        conn.close()
+        total += len(chunk)
+        if total % 1000 == 0:
+            print("  已检查 %d/%d，判定图形 %d" % (total, len(rows), flagged), flush=True)
+        time.sleep(pause)
+
+    print("完成：检查 %d 条，判定二维图形 %d 条" % (total, flagged), flush=True)
+    return flagged
+
+
+def scan_graphics(scene=None, limit=None, workers=6):
+    """并发检测二维插画：颜色数极少 + 大片纯色 → 判为图形。"""
+    import io
+    from collections import Counter
+    from concurrent.futures import ThreadPoolExecutor
+
+    from PIL import Image
+
+    conn = db()
+    sql = "SELECT id, thumb FROM photos WHERE flat IS NULL"
+    args = []
+    if scene:
+        sql += " AND scene=?"
+        args.append(scene)
+    if limit:
+        sql += " LIMIT %d" % int(limit)
+    rows = conn.execute(sql, args).fetchall()
+    conn.close()
+    print("待检测 %d 张（%d 线程）" % (len(rows), workers), flush=True)
+
+    def probe(row):
+        try:
+            data = http_get(wsrv(row["thumb"], 250), timeout=25)
+            im = Image.open(io.BytesIO(data)).convert("RGB")
+            im.thumbnail((64, 64))
+            px = list(im.getdata())
+            uniq = len(set(px)) / len(px)
+            dom = Counter(px).most_common(1)[0][1] / len(px)
+            return row["id"], round(uniq, 3), round(dom, 3)
+        except Exception:
+            return row["id"], None, None
+
+    done = flagged = 0
+    with ThreadPoolExecutor(max_workers=workers) as pool:
+        for pid, uniq, dom in pool.map(probe, rows):
+            if uniq is None:
+                continue
+            g = 1 if uniq < 0.28 else 0
+            conn = db()
+            conn.execute("UPDATE photos SET flat=?, is_graphic=? WHERE id=?", (uniq, g, pid))
+            conn.commit()
+            conn.close()
+            done += 1
+            flagged += g
+            if done % 100 == 0:
+                print("  已检测 %d/%d，判定图形 %d" % (done, len(rows), flagged), flush=True)
+
+    print("检测完成 %d 张，其中二维图形 %d 张" % (done, flagged), flush=True)
+    return done
+
+
 def quality_scan(limit=None, pause=0.35):
     """下载小缩略图计算清晰度与水印风险，支持断点续跑。"""
     conn = db()
@@ -1925,7 +2070,7 @@ def expand_token(t):
 def search_photos(q, country="", city="", scene="", orient="", only_saved=False,
                   page=1, per=24, min_pixels=0, hide_blur=False, hide_wm=False,
                   hide_selfie=False, hide_solo=False, hide_dated=False,
-                  hide_people=False):
+                  hide_people=False, hide_graphic=False):
     """精确优先的检索：全部关键词命中才算精确匹配；否则降级为弱匹配并显式标注。"""
     conn = db()
     where, args = ["hidden=0"], []
@@ -1953,6 +2098,8 @@ def search_photos(q, country="", city="", scene="", orient="", only_saved=False,
         where.append("COALESCE(person,0)=0")
     if hide_wm:
         where.append("COALESCE(wm_suspect,0)=0")
+    if hide_graphic:
+        where.append("COALESCE(is_graphic,0)=0")
     if hide_blur:
         where.append("(blur_score IS NULL OR blur_score >= ?)")
         args.append(BLUR_THRESHOLD)
@@ -2082,6 +2229,9 @@ def facets(country=""):
         "dated": conn.execute(
             "SELECT COUNT(*) c FROM photos WHERE hidden=0 AND COALESCE(dated,0)=1"
         ).fetchone()["c"],
+        "graphic": conn.execute(
+            "SELECT COUNT(*) c FROM photos WHERE hidden=0 AND COALESCE(is_graphic,0)=1"
+        ).fetchone()["c"],
         "checked": conn.execute(
             "SELECT COUNT(*) c FROM photos WHERE checked_at IS NOT NULL").fetchone()["c"],
     }
@@ -2204,6 +2354,7 @@ class Handler(BaseHTTPRequestHandler):
                     hide_solo=one("nosolo") == "1",
                     hide_dated=one("nodate") == "1",
                     hide_people=one("nopeople") == "1",
+                    hide_graphic=one("nogfx") == "1",
                 ))
 
             if path == "/api/hide":
@@ -2327,6 +2478,13 @@ def main():
             return
         if cmd == "clean_life":
             purge_life_noise()
+            return
+        if cmd == "graphics":
+            sc = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] != "-" else None
+            scan_graphics(scene=sc)
+            return
+        if cmd == "mediatype":
+            scan_mediatype()
             return
         if cmd == "refix":
             refix_thumbs()

@@ -116,7 +116,7 @@ const BLUR_THRESHOLD = 12;
 const state = {
   q: '', country: '', city: '', scene: '', orient: '', saved: false,
   page: 1, per: 24, mode: 'browse', list: [], shown: 0, idx: -1,
-  minpx: 1000000, nowm: true, noselfie: true, noblur: false,
+  minpx: 1000000, nowm: true, noselfie: true, noblur: false, nogfx: true,
 };
 
 let ALL = [];
@@ -141,6 +141,19 @@ function originalUrl(th) {
   const m = String(th || '').match(/^(.*)\/thumb\/(.+)\/\d+px-[^/]+$/);
   return m ? m[1] + '/' + m[2] : th;
 }
+
+// 默认直连 Wikimedia（印尼/新加坡访问快）；?cdn=wsrv 可强制走图片代理对比
+const FORCE_PROXY = new URLSearchParams(location.search).get('cdn') === 'wsrv';
+const wsrvUrl = (u, w) => u
+  ? 'https://wsrv.nl/?url=' + encodeURIComponent(u) + '&w=' + w + '&output=webp&q=78'
+  : '';
+const cdn = (u, w) => (FORCE_PROXY ? wsrvUrl(u, w || 400) : (u || ''));
+
+document.addEventListener('error', (e) => {
+  const img = e.target;
+  if (!img || img.tagName !== 'IMG' || !img.dataset.fb) return;
+  if (img.src !== img.dataset.fb) img.src = img.dataset.fb;
+}, true);
 
 function previewUrl(th) {
   return String(th || '').replace(/\/\d+px-/, '/1280px-');
@@ -176,6 +189,7 @@ function matchesFilters(p) {
   if (state.nowm && p.wm) return false;
   if (state.noselfie && (p.selfie || p.solo)) return false;
   if (state.noblur && p.blur != null && p.blur < BLUR_THRESHOLD) return false;
+  if (state.nogfx && p.gf) return false;
   return true;
 }
 
@@ -235,7 +249,8 @@ function cardHTML(r, i) {
   const on = SAVED.has(p.id);
   const ar = (p.width && p.height) ? ` style="aspect-ratio:${p.width}/${p.height}"` : '';
   return `<figure class="card${r.weak ? ' weak' : ''}" data-i="${i}">
-    <img src="${esc(p.thumb)}" alt="${esc(p.title)}" loading="lazy" decoding="async"${ar}>
+    <img src="${esc(cdn(p.thumb, 400))}" data-fb="${esc(FORCE_PROXY ? p.thumb : wsrvUrl(p.thumb, 400))}"
+         alt="${esc(p.title)}" loading="lazy" decoding="async"${ar}>
     ${badge}
     <button class="fav ${on ? 'on' : ''}" data-id="${p.id}" title="${on ? '取消收藏' : '收藏'}">${on ? '♥' : '♡'}</button>
     <figcaption class="cap">
@@ -374,9 +389,8 @@ function renderLB() {
   const p = r.p;
 
   const img = $('#lbImg');
-  const pv = previewUrl(p.thumb);
   img.onerror = () => { img.onerror = null; img.src = p.thumb; };
-  img.src = pv;
+  img.src = cdn(p.thumb, 1200);
   img.alt = p.title || '';
 
   $('#lbTitle').textContent = p.title || '未命名素材';
@@ -505,6 +519,7 @@ $('#optHd').addEventListener('change', (e) => {
 $('#optWm').addEventListener('change', (e) => { state.nowm = e.target.checked; render(); });
 $('#optSelfie').addEventListener('change', (e) => { state.noselfie = e.target.checked; render(); });
 $('#optBlur').addEventListener('change', (e) => { state.noblur = e.target.checked; render(); });
+$('#optGfx').addEventListener('change', (e) => { state.nogfx = e.target.checked; render(); });
 
 $('#moreBtn').addEventListener('click', loadMore);
 
@@ -556,7 +571,7 @@ new IntersectionObserver((entries) => {
       const p = {
         id: x.i, title: x.t, descr: x.d, city: x.c, scene: x.s, country: x.n,
         orientation: x.o, width: x.w, height: x.h, thumb: x.th, page: x.pg,
-        license: x.li, artist: x.ar, selfie: x.sf, solo: x.so, wm: x.wm, blur: x.bl,
+        license: x.li, artist: x.ar, selfie: x.sf, solo: x.so, wm: x.wm, blur: x.bl, gf: x.gf,
       };
       p._t = String(p.title || '').toLowerCase();
       p._f = [p.country, p.city, p.scene].join(' ').toLowerCase();

@@ -27,7 +27,7 @@ def main():
     rows = conn.execute(
         """SELECT id, title, descr, city, scene, country, orientation,
                   width, height, thumb, page, license, artist,
-                  selfie, solo, wm_suspect, blur_score
+                  selfie, solo, wm_suspect, blur_score, is_graphic
            FROM photos WHERE hidden=0 ORDER BY id DESC"""
     ).fetchall()
     conn.close()
@@ -56,6 +56,7 @@ def main():
             "so": r["solo"] or 0,
             "wm": r["wm_suspect"] or 0,
             "bl": r["blur_score"],
+            "gf": r["is_graphic"] or 0,
         })
 
     payload = {
