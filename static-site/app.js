@@ -548,13 +548,10 @@ new IntersectionObserver((entries) => {
 
 (async function boot() {
   loadSaved();
-  const heights = [220, 180, 260, 200, 240, 190, 230, 210];
-  $('#grid').innerHTML = heights
-    .map(h => `<div class="sk" style="height:${h}px"></div>`).join('');
   document.body.classList.add('is-searching');
   try {
-    const res = await fetch('./data/library.json', { cache: 'no-cache' });
-    const data = await res.json();
+    const data = window.__ASSET_LIB__;
+    if (!data || !data.items) throw new Error('素材索引未加载');
     ALL = data.items.map(x => {
       const p = {
         id: x.i, title: x.t, descr: x.d, city: x.c, scene: x.s, country: x.n,
