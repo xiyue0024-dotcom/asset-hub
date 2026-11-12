@@ -111,7 +111,7 @@ function expandToken(t) {
 
 const SAVED_KEY = 'assethub_saved_v1';
 const HIDDEN_KEY = 'assethub_hidden_v1';
-const BLUR_THRESHOLD = 12;
+const BLUR_THRESHOLD = 30;
 
 // 生活场景：这 6 类是「印尼/新加坡真实日常」的核心，单独给一个聚合入口。
 // 与 server.py 的 LIFE_SCENES 保持一致。
@@ -121,7 +121,7 @@ const LIFE_TOKEN = '__life';
 const state = {
   q: '', country: '', city: '', scene: '', orient: '', saved: false,
   page: 1, per: 24, mode: 'browse', list: [], shown: 0, idx: -1,
-  minpx: 1000000, nowm: true, noselfie: true, noblur: false, nogfx: true,
+  minpx: 1000000, nowm: true, noselfie: true, noblur: true, nogfx: true,
   nogray: true, nocar: true, nojunk: true,
 };
 

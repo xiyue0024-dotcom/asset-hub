@@ -871,7 +871,7 @@ MIGRATIONS = [
 
 # 质量阈值
 MIN_PIXELS = 1000000      # 低于 100 万像素视为低清
-BLUR_THRESHOLD = 12.0     # 边缘强度低于此值视为模糊
+BLUR_THRESHOLD = 30.0     # 边缘强度低于此值视为模糊（实测中位 70，30 以下明显发虚）
 CORNER_RATIO = 1.9        # 角落边缘密度 / 中心边缘密度，超过则疑似水印
 
 # 黑白判定（先严后宽，改阈值用 recolor 纯 SQL 重算，不重扫）
@@ -2407,8 +2407,9 @@ def quality_scan_fast(limit=None, workers=8, only_life=False, dry_run=False):
         url = thumbify(r["thumb"] or "", 250)
         if not url:
             return None
-        # 直连优先；被限流或 404 时退回 wsrv.nl 代理
-        for target in (url, wsrv(url, 250)):
+        # 先走 wsrv.nl 代理：直连 upload.wikimedia.org 并发一高就被 429，
+        # 代理能扛住大半（约 50% 命中），剩下的再回直连。
+        for target in (wsrv(url, 250), url):
             try:
                 blur, ratio = analyze_image(http_get(target, timeout=25))
                 return r["id"], blur, ratio

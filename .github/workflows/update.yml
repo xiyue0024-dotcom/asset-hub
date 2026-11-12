@@ -42,7 +42,9 @@ jobs:
           python server.py life_scenes
           python server.py fill_scene
           python server.py fix_meta
-          python server.py quality 400
+          # 画质评分要逐张下载缩略图，本地容易被 Wikimedia 限流；
+          # 放 CI 上跑（GitHub 的 IP 不受本地限流影响），每天 1500 张约两周补齐全库
+          python server.py quality 1500
 
       - name: 导出静态站点
         run: python build_static.py

@@ -9,7 +9,7 @@ const state = {
   q: '', country: '', city: '', scene: '', orient: '',
   saved: false, page: 1, per: 24, total: 0, items: [], loading: false, idx: -1,
   mode: 'browse', ingested: 0,
-  minpx: 1000000, nowm: true, noselfie: true, noblur: false, nogfx: true,
+  minpx: 1000000, nowm: true, noselfie: true, noblur: true, nogfx: true,
   nogray: true, nocar: true, nojunk: true,
 };
 
