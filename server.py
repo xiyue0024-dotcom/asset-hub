@@ -928,8 +928,40 @@ def init_db():
     conn.close()
 
 
+# 素材库只收浏览器能直接显示的位图。Commons 的分类里混着音频（.ogg/.wav）、
+# 视频（.webm）、PDF、SVG 和 TIFF——TIFF 浏览器打不开，其余根本不是照片。
+PHOTO_EXT = (".jpg", ".jpeg", ".png", ".webp")
+
+
+def is_photo_file(title):
+    return os.path.splitext((title or "").lower())[1] in PHOTO_EXT
+
+
+def purge_nonphoto(dry_run=False):
+    """清掉历史入库的非位图文件。"""
+    conn = db()
+    rows = conn.execute("SELECT id, title FROM photos").fetchall()
+    n = 0
+    for r in rows:
+        if is_photo_file(r["title"]):
+            continue
+        n += 1
+        if not dry_run:
+            conn.execute("DELETE FROM photos WHERE id=?", (r["id"],))
+    if not dry_run:
+        conn.commit()
+        _facets_cache.clear()
+    left = conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"]
+    conn.close()
+    print("%s非位图清理 %d 条，剩余 %d 条"
+          % ("[DRY-RUN] " if dry_run else "", n, left), flush=True)
+    return n
+
+
 def upsert_photo(item, country_hint, tag):
     """写入一条素材。source_id / 标题重复则跳过。返回 True 表示新增。"""
+    if not is_photo_file(item.get("title")):
+        return False
     blob = " ".join([item.get("title", ""), item.get("descr", "")])
     if is_rejected(blob):
         return False
@@ -2681,6 +2713,104 @@ LIFE_CATEGORIES_2 = [
 ]
 
 
+# ---------------------------------------------------------------------------
+# 第四批：生活证明场景（proof of life）
+#
+# 前两批偏「市井」——摊贩、菜市场、小巷。但真正让一张图看起来像「我在这里生活」
+# 的，是医院、图书馆、地铁、商场、洗衣店这类日常设施。这批专门补这些。
+#
+# 只用分类采集，不用英文关键词搜索：Commons 全文检索是「任一词命中」，
+# 搜 clinic singapore 会捞回欧美诊所（前几轮踩过的坑）。
+# ---------------------------------------------------------------------------
+LIFE_PROOF_CATEGORIES = [
+    # ---- 印尼 ----
+    ("Category:Clinics in Indonesia", "印度尼西亚"),
+    ("Category:Hospitals in Indonesia", "印度尼西亚"),
+    ("Category:Libraries in Indonesia", "印度尼西亚"),
+    ("Category:Schools in Indonesia", "印度尼西亚"),
+    ("Category:Shopping malls in Indonesia", "印度尼西亚"),
+    ("Category:Supermarkets in Indonesia", "印度尼西亚"),
+    ("Category:Bus stations in Indonesia", "印度尼西亚"),
+    ("Category:Train stations in Indonesia", "印度尼西亚"),
+    ("Category:Pharmacies in Indonesia", "印度尼西亚"),
+    # ---- 新加坡 ----
+    ("Category:Clinics in Singapore", "新加坡"),
+    ("Category:Hospitals in Singapore", "新加坡"),
+    ("Category:Libraries in Singapore", "新加坡"),
+    ("Category:Shopping malls in Singapore", "新加坡"),
+    ("Category:Schools in Singapore", "新加坡"),
+    ("Category:Community centres in Singapore", "新加坡"),
+    ("Category:Mass Rapid Transit (Singapore)", "新加坡"),
+    ("Category:NTUC FairPrice", "新加坡"),
+    ("Category:Bus stations in Singapore", "新加坡"),
+]
+
+# 这批图按分类名落到已有场景，不新开类别
+LIFE_PROOF_SCENE = {
+    "clinic": "社区", "hospital": "社区", "librar": "社区", "school": "社区",
+    "universit": "社区", "pharmac": "社区", "community centre": "社区",
+    "mall": "小店", "supermarket": "小店", "shop": "小店",
+    "station": "交通", "interchange": "交通", "railway": "交通",
+    "bus": "交通",
+}
+
+
+def apply_proof_scenes(dry_run=False):
+    """把「生活证明」分类采集的图按分类名落场景。只动 tags 以 Category: 开头的。"""
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title, descr, tags, country, city, scene FROM photos "
+        "WHERE tags LIKE 'Category:%'").fetchall()
+    stat, n = {}, 0
+    for r in rows:
+        t = (r["tags"] or "").lower()
+        sc = None
+        for k, v in LIFE_PROOF_SCENE.items():
+            if k in t:
+                sc = v
+                break
+        if not sc or r["scene"] == sc:
+            continue
+        stat[sc] = stat.get(sc, 0) + 1
+        n += 1
+        if dry_run:
+            continue
+        st = " ".join([r["title"] or "", r["descr"] or "", r["tags"] or "",
+                       r["country"] or "", r["city"] or "", sc]).lower()
+        conn.execute("UPDATE photos SET scene=?, search_text=? WHERE id=?",
+                     (sc, st, r["id"]))
+    if not dry_run:
+        conn.commit()
+        _facets_cache.clear()
+    conn.close()
+    detail = "、".join("%s %d" % (k, v) for k, v in
+                       sorted(stat.items(), key=lambda x: -x[1]))
+    print("%s生活证明落场景 %d 条：%s"
+          % ("[DRY-RUN] " if dry_run else "", n, detail or "无变化"), flush=True)
+    return n
+
+
+def ingest_life_proof(per_cat=100, dry_run=False):
+    """按分类采集「生活证明」场景。返回新增条数。"""
+    total = 0
+    for i, (cat, country) in enumerate(LIFE_PROOF_CATEGORIES, 1):
+        items, _ = wikimedia_category(cat, per_cat)
+        n = 0
+        if not dry_run:
+            for it in items:
+                if upsert_photo(it, country, cat):
+                    n += 1
+        total += n
+        print("[%02d/%d] %-52s 抓 %d 新 %d"
+              % (i, len(LIFE_PROOF_CATEGORIES), cat, len(items), n), flush=True)
+        time.sleep(0.8)
+    if not dry_run:
+        set_meta("last_life_proof_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+        set_meta("last_life_proof_added", str(total))
+    print("生活证明场景采集完成 +%d" % total, flush=True)
+    return total
+
+
 # ---- 生活子场景映射 ----
 # 生活词种子天然带场景语义（warung=摊贩、pasar=市集、void deck=组屋底层），
 # 比 CLIP 硬套「人文/建筑/街景」准得多。按 tags 精确命中落场景，解决生活类堆在「其他」。
@@ -2920,6 +3050,7 @@ def apply_life_scenes(dry_run=False):
                        sorted(stat.items(), key=lambda x: -x[1]))
     print("%s生活场景落位 %d 条：%s"
           % ("[DRY-RUN] " if dry_run else "", n, detail or "无变化"), flush=True)
+    apply_proof_scenes(dry_run=dry_run)
     return n
 
 
@@ -3853,6 +3984,9 @@ def main():
         if cmd == "clean_generic":
             purge_generic_noise(dry_run=("--dry" in sys.argv))
             return
+        if cmd == "clean_nonphoto":
+            purge_nonphoto(dry_run=("--dry" in sys.argv))
+            return
         if cmd == "life_scenes":
             apply_life_scenes(dry_run=("--dry" in sys.argv))
             return
@@ -3932,6 +4066,11 @@ def main():
                 pages=int(sys.argv[2]) if len(sys.argv) > 2 else 3,
                 per=int(sys.argv[3]) if len(sys.argv) > 3 else 50,
                 batch=int(sys.argv[4]) if len(sys.argv) > 4 else 0)
+            return
+        if cmd == "life_proof":
+            ingest_life_proof(
+                per_cat=int(sys.argv[2]) if len(sys.argv) > 2 else 100,
+                dry_run=("--dry" in sys.argv))
             return
         if cmd == "device":
             ingest_device(limit=int(sys.argv[2]) if len(sys.argv) > 2 else 40)
