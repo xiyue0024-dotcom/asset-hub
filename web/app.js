@@ -1,6 +1,10 @@
 'use strict';
 
 const $ = (s) => document.querySelector(s);
+
+// 与 server.py 的 LIFE_SCENES 保持一致
+const LIFE_SCENES = new Set(['摊贩', '市集', '街巷', '小店', '社区', '农渔']);
+
 const state = {
   q: '', country: '', city: '', scene: '', orient: '',
   saved: false, page: 1, per: 24, total: 0, items: [], loading: false, idx: -1,
@@ -75,9 +79,12 @@ async function loadFacets() {
       .map(c => `<option value="${esc(c.name)}">${esc(c.name)} · ${c.count}</option>`).join('');
   if (state.city) sel.value = state.city;
 
-  const chips = [{ name: '', count: 0, label: '全部场景' }]
-    .concat(f.scenes.filter(s => s.name && s.name !== '其他')
-      .map(s => ({ name: s.name, count: s.count, label: s.name })));
+  const chips = [{ name: '', count: 0, label: '全部场景' }];
+  const lifeCount = f.scenes.filter(s => LIFE_SCENES.has(s.name))
+    .reduce((a, s) => a + s.count, 0);
+  if (lifeCount) chips.push({ name: '__life', count: lifeCount, label: '生活场景' });
+  chips.push(...f.scenes.filter(s => s.name && s.name !== '其他')
+    .map(s => ({ name: s.name, count: s.count, label: s.name })));
 
   $('#sceneChips').innerHTML = chips.map(c =>
     `<button class="chip ${state.scene === c.name ? 'on' : ''}" data-scene="${esc(c.name)}">` +
@@ -203,7 +210,7 @@ function renderStatus(data, ingested) {
   else if (data.mode === 'loose') bits.push('<b>' + n.toLocaleString() + '</b> 张弱匹配');
   else bits.push('共 <b>' + n.toLocaleString() + '</b> 张素材');
   if (n > shown) bits.push('已显示 ' + shown);
-  if (state.scene) bits.push('场景：' + state.scene);
+  if (state.scene) bits.push('场景：' + (state.scene === '__life' ? '生活场景' : state.scene));
   if (state.city) bits.push('城市：' + state.city);
   if (state.orient) bits.push(state.orient === 'landscape' ? '横版' : '竖版');
   if (state.saved) bits.push('仅收藏');

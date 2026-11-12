@@ -136,7 +136,6 @@ git commit & push         # 页面自动重建
 也可以在 Actions 页面点 `Run workflow` 手动触发。
 
 ### 静态版的三个限制
-
 1. **不能「下载原图」**。跨域链接的 `download` 属性浏览器会忽略，所以按钮改成「打开原图」，在新标签页右键另存。
 2. **收藏存在各自浏览器里**（localStorage），团队之间不共享，换设备也不同步。
 3. **Pages 是公开的**。免费账号的 Pages 站点任何拿到链接的人都能访问。要真正私有，得用 GitHub Enterprise Cloud，或者换 Cloudflare Pages + Access。
@@ -149,6 +148,8 @@ python build_static.py out_dir  # 输出到指定目录
 ```
 
 索引约 2.3 MB，gzip 后 322 KB，首次加载一两秒。
+
+> **2026-11-12 起导出只含 ≥1MP 的图**。前端默认就用「只看高清」过滤，低清图导出去也不会被看到，白占体积。低清图仍在数据库里，调 `build_static.py` 的 `width*height >= 1000000` 就能重新纳入。
 
 ## 素材质量过滤
 
@@ -213,11 +214,18 @@ python server.py calibrate  # 抽样打印指标分布，用于定阈值
 视觉检测需要下载缩略图逐张分析，是个耗时任务，支持断点续跑：
 
 ```bash
-python server.py quality        # 检测所有未检测的
+python server.py quality        # 检测所有未检测的（单线程，慢）
 python server.py quality 200    # 只检测 200 张
+python server.py quality_fast   # 多线程版，推荐；默认 8 并发
+python server.py quality_fast 2000 4        # 只跑 2000 张、4 并发（更温和）
+python server.py quality_fast - 6 --life    # 只跑生活类，6 并发
 ```
 
-4000 张大约需要 1 小时（受 Wikimedia 限流影响）。检测结果会写进 `blur_score` / `corner_score` / `wm_suspect`，界面上的「疑似水印」「隐藏模糊」开关随之生效。
+单线程 4000 张约 1 小时（受 Wikimedia 限流影响）；`quality_fast` 把下载放到线程池、写库仍留在主线程，1.4 万张实测 15–25 分钟。**不要和采集任务同时跑**，两个进程同时写 SQLite 会 `database is locked`。
+
+检测结果会写进 `blur_score` / `corner_score` / `wm_suspect`，界面上的「疑似水印」「隐藏模糊」开关随之生效。
+
+> 2026-11-12 之前 `quality` 从未跑全量（14,840/14,883 张 `blur_score` 为空），清晰度过滤形同虚设，这是「模糊图混进来」的根因。现在每日 workflow 会自动跑 `quality 400`。
 
 ### 关于文件名里的日期
 
@@ -315,6 +323,60 @@ Unsplash 是签约摄影师的作品库，统一调色、黄金时刻、刻意�
 - **界面上补采**：搜索框输入关键词，点右上角「＋ 补采素材」；
 - **命令行批量**：编辑 `server.py` 里的 `SEEDS` 列表，然后 `python server.py ingest`；
 - **自动补采**：搜索时本地命中不足 8 张，会自动去公开图库拉一批入库（5 分钟内同一关键词不重复请求）。
+
+### 生活类补量：必须翻页，不能只重跑
+
+`python server.py life` 只取每个种子的搜索首页。首页那批早就进库了，所以**重跑等于空转**（实测 `warung makan` 首页 8 条全部已在库）。
+
+真正的增量在第 2、3 页：
+
+```bash
+python server.py life_deep              # 212 个种子 × 3 页 × 50 条，约 40–60 分钟
+python server.py life_deep 3 50 1       # 只跑第 1 批（印尼吃喝 + 新加坡熟食）
+python server.py life_deep 2 30 2       # 第 2 批，每个种子 2 页 30 条
+```
+
+实测单种子增量：`warung makan` +55、`warung kopi` +69、`pedang sayur` +68、`kopitiam` +115。
+
+### 生活场景落位（解决「其他」堆积）
+
+CLIP 的分类体系里没有 warung / pasar / void deck 这些概念，生活图会被硬塞进「人文/建筑/街景」，或者干脆掉进「其他」。这里改成**按采集种子词直接落场景**：
+
+```bash
+python server.py life_scenes --dry   # 先看会改多少
+python server.py life_scenes         # 幂等，可反复跑
+python server.py fill_scene          # 剩下的「其他」用 Commons 分类反推
+```
+
+六个生活场景：**摊贩 / 市集 / 街巷 / 小店 / 社区 / 农渔**。前端场景条会自动出现「生活场景」聚合入口，点一下就是这六类的合集。
+
+映射表在 `server.py` 的 `LIFE_SCENE_MAP`，**新增种子词必须同步加进去**，否则那张图会留在「其他」。有校验办法：
+
+```bash
+python -c "import server; a={q for q,_ in server.LIFE_SEEDS}|{q for q,_ in server.LIFE_SEEDS_2}|{q for q,_ in server.DEVICE_SEEDS}; print('未映射:', sorted(a-set(server._LIFE_TAG_SCENE)))"
+```
+
+### 地域判定：看 Commons 分类，不看标题
+
+标题里的地名经常是菜名或品牌（`Nasi Goreng` 全世界都在拍），靠标题判地域必然混入境外图。改成读 `cats` 字段（Commons 人工维护的分类）：
+
+```bash
+python server.py clean_foreign --dry   # 先看会删多少
+python server.py clean_foreign         # 实际删除
+```
+
+规则：`cats` 含印尼/新加坡地名 → 保留；含境外国名 → 删除；判不出 → 保守保留。
+
+**境外词用整词匹配**（`\bindia\b` 而不是子串），否则 `Indian Ocean`（巴东海岸、亚齐海啸）会被当成印度、`Chinatown` 会被当成中国。2026-11-12 全库审计删掉 118 条境外误入（马来西亚/意大利/印度/英国/澳洲的 Nasi Goreng、Burger King、Taco Bell 等）。
+
+### 作者字段清洗
+
+```bash
+python server.py fix_meta --dry
+python server.py fix_meta
+```
+
+处理三类脏值：带个人主页 URL、带 `File:xxx.jpg :` 前缀、同名重复（`Unknown author Unknown author`）。
 
 ## 采集的几个坑（已经处理）
 

@@ -113,6 +113,11 @@ const SAVED_KEY = 'assethub_saved_v1';
 const HIDDEN_KEY = 'assethub_hidden_v1';
 const BLUR_THRESHOLD = 12;
 
+// 生活场景：这 6 类是「印尼/新加坡真实日常」的核心，单独给一个聚合入口。
+// 与 server.py 的 LIFE_SCENES 保持一致。
+const LIFE_SCENES = new Set(['摊贩', '市集', '街巷', '小店', '社区', '农渔']);
+const LIFE_TOKEN = '__life';
+
 const state = {
   q: '', country: '', city: '', scene: '', orient: '', saved: false,
   page: 1, per: 24, mode: 'browse', list: [], shown: 0, idx: -1,
@@ -187,7 +192,9 @@ function matchesFilters(p) {
   if (HIDDEN.has(p.id)) return false;
   if (state.country && p.country !== state.country) return false;
   if (state.city && p.city !== state.city) return false;
-  if (state.scene && p.scene !== state.scene) return false;
+  if (state.scene === LIFE_TOKEN) {
+    if (!LIFE_SCENES.has(p.scene)) return false;
+  } else if (state.scene && p.scene !== state.scene) return false;
   if (state.orient && p.orientation !== state.orient) return false;
   if (state.saved && !SAVED.has(p.id)) return false;
   if (state.minpx && p.width && p.height && (p.width * p.height) < state.minpx) return false;
@@ -304,7 +311,7 @@ function render() {
   else if (state.mode === 'loose') bits.push('<b>' + n.toLocaleString() + '</b> 张弱匹配');
   else bits.push('共 <b>' + n.toLocaleString() + '</b> 张素材');
   if (n > state.shown) bits.push('已显示 ' + state.shown);
-  if (state.scene) bits.push('场景：' + state.scene);
+  if (state.scene) bits.push('场景：' + (state.scene === LIFE_TOKEN ? '生活场景' : state.scene));
   if (state.city) bits.push('城市：' + state.city);
   if (state.orient) bits.push(state.orient === 'landscape' ? '横版' : '竖版');
   if (state.saved) bits.push('仅收藏');
@@ -353,7 +360,9 @@ function buildFacets() {
   else if (state.city) { state.city = ''; sel.value = ''; }
 
   const scenes = [...sceneMap.entries()].sort((a, b) => b[1] - a[1]);
+  const lifeCount = base.filter(p => LIFE_SCENES.has(p.scene)).length;
   const chips = [{ n: '', c: 0, label: '全部场景' }]
+    .concat(lifeCount ? [{ n: LIFE_TOKEN, c: lifeCount, label: '生活场景' }] : [])
     .concat(scenes.map(([n, c]) => ({ n, c, label: n })));
 
   $('#sceneChips').innerHTML = chips.map(x =>
@@ -583,12 +592,15 @@ new IntersectionObserver((entries) => {
       const p = {
         id: x.i, title: x.t, descr: x.d, city: x.c, scene: x.s, country: x.n,
         orientation: x.o, width: x.w, height: x.h, thumb: x.th, page: x.pg,
-        license: x.li, artist: x.ar, selfie: x.sf, solo: x.so, wm: x.wm, blur: x.bl, gf: x.gf,
-        gray: x.gy, car: x.ci, junk: x.jk,
+        license: x.li, artist: x.ar, tags: x.k || '', selfie: x.sf, solo: x.so,
+        wm: x.wm, blur: x.bl, gf: x.gf, gray: x.gy, car: x.ci, junk: x.jk,
       };
       p._t = String(p.title || '').toLowerCase();
       p._f = [p.country, p.city, p.scene].join(' ').toLowerCase();
-      p._st = [p.title, p.descr, p.country, p.city, p.scene, p.license].join(' ').toLowerCase();
+      // 采集关键词也进检索：搜 warung / pasar / void deck 能直接命中，
+      // 不必等标题里恰好出现这个词
+      p._st = [p.title, p.descr, p.country, p.city, p.scene, p.license, p.tags]
+        .join(' ').toLowerCase();
       return p;
     });
     $('#statUpdate').textContent = data.updated ? data.updated.slice(5) : '—';

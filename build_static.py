@@ -25,11 +25,15 @@ OUT = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.path.join(ROOT, 
 def main():
     S.init_db()
     conn = S.db()
+    # 只导出 >=1MP 的图：前端默认就用 minpx=1000000 过滤，低清图导出去也是白占体积。
+    # 尺寸未知（width/height 为 0，如部分外部图库）照常导出。
     rows = conn.execute(
         """SELECT id, title, descr, city, scene, country, orientation,
-                  width, height, thumb, page, license, artist,
+                  width, height, thumb, page, license, artist, tags,
                   selfie, solo, wm_suspect, blur_score, is_graphic, is_gray, car_iso, junk_sign
-           FROM photos WHERE hidden=0 ORDER BY id DESC"""
+           FROM photos
+           WHERE hidden=0 AND (width=0 OR height=0 OR width*height >= 1000000)
+           ORDER BY id DESC"""
     ).fetchall()
     conn.close()
 
@@ -53,6 +57,7 @@ def main():
             "pg": r["page"] or "",
             "li": r["license"] or "",
             "ar": r["artist"] or "",
+            "k": r["tags"] or "",
             "sf": r["selfie"] or 0,
             "so": r["solo"] or 0,
             "wm": r["wm_suspect"] or 0,

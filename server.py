@@ -434,6 +434,47 @@ def clean_html(s):
     return re.sub(r"\s+", " ", s).strip()
 
 
+def clean_artist(s):
+    """清洗作者字段。
+
+    Commons 的 Artist 元数据是自由文本，常见三类脏值：
+    1. 带个人主页 URL（Yves Picq http://veton.picq.fr）
+    2. 带 "File:xxx.jpg :" 前缀（衍生作品模板把文件名也塞进来）
+    3. 同名重复（"Unknown author Unknown author"，模板渲染两遍）
+    """
+    s = clean_html(s)
+    if not s:
+        return ""
+    s = re.sub(r"https?://\S+", " ", s, flags=re.I)      # 去 URL
+    s = re.sub(r"^File:[^:]{0,200}:\s*", "", s, flags=re.I)  # 去文件名前缀
+    s = re.sub(r"\(\s*\)", " ", s)                        # 去掉只剩括号的残渣
+    s = re.sub(r"\s+", " ", s).strip(" -–—|,;:")
+    m = re.fullmatch(r"(.{3,80}?)\s+\1", s)               # 同名重复合并
+    if m:
+        s = m.group(1)
+    return s[:120].strip()
+
+
+def fix_artists(dry_run=False):
+    """按 clean_artist 回填历史 artist。幂等。"""
+    conn = db()
+    rows = conn.execute("SELECT id, artist FROM photos").fetchall()
+    n = 0
+    for r in rows:
+        old = r["artist"] or ""
+        new = clean_artist(old)
+        if new == old:
+            continue
+        n += 1
+        if not dry_run:
+            conn.execute("UPDATE photos SET artist=? WHERE id=?", (new, r["id"]))
+    if not dry_run:
+        conn.commit()
+    conn.close()
+    print("%s作者字段修正 %d 条" % ("[DRY-RUN] " if dry_run else "", n), flush=True)
+    return n
+
+
 def _classify_core(title, desc, hint_country=None):
     t = (title or "").lower()
     d = (desc or "").lower()
@@ -605,6 +646,116 @@ def has_region_signal(text):
         if _score2(pats, t, "") > 0:
             return True
     return any(_hit(p, t) for p in LOCAL_WORDS)
+
+
+# ---- 生活类地域判定：基于 Commons 分类（cats 字段）----
+# 比 has_region_signal 只看标题文本可靠得多：cats 是人工维护的分类，地域信号极明确
+# （如 Category:Indonesia / Category:Void decks in Singapore），且 94%+ 的图已回填该字段。
+CAT_LOCAL = [
+    "indonesia", "jakarta", "surabaya", "bandung", "yogyakarta", "yogya", "bali",
+    "lombok", "sumatra", "sumatera", "java", "kalimantan", "sulawesi", "papua",
+    "medan", "semarang", "makassar", "bogor", "depok", "tangerang", "bekasi",
+    "batam", "bintan", "surakarta", "solo", "palembang", "samarinda", "manado",
+    "denpasar", "mataram", "kupang", "ambon", "jayapura", "malang", "bantul",
+    "sleman", "magelang", "purwokerto", "tegal", "pekalongan", "cilacap",
+    "probolinggo", "jember", "banyuwangi", "kebumen", "karimunjawa", "cirebon",
+    "tasikmalaya", "garut", "sukabumi", "karawang", "purwakarta", "serang",
+    "cilegon", "balikpapan", "banjarmasin", "pontianak", "palangkaraya",
+    "pekanbaru", "jambi", "bengkulu", "lampung", "labuan bajo", "flores",
+    "sumba", "ternate", "senggigi", "gili",
+    # 历史地名与馆藏常见主题：荷兰档案馆照片常被 "Rijksmuseum Amsterdam" 误判成境外，
+    # 实际拍的是巴达维亚（雅加达）、班达亚齐这些地方。
+    "batavia", "banda aceh", "kota radja", "ancol", "glodok", "sunda kelapa",
+    "weltevreden", "bangka", "belitung", "bukit lawang", "samosir", "bromo",
+    "borobudur", "prambanan", "komodo", "raja ampat", "nusa penida", "bunaken",
+    "toraja", "banda neira", "maumere", "larantuka", "ende", "bajawa",
+    # 巴厘岛细分区域（素材最密集的地区，必须能判 local）
+    "ubud", "kuta", "seminyak", "canggu", "sanur", "nusa dua", "gianyar",
+    "badung", "tabanan", "singaraja", "lovina", "amed",
+    # 新加坡
+    "singapore", "tiong bahru", "bedok", "ang mo kio", "toa payoh", "jurong",
+    "woodlands", "yishun", "geylang", "pasir ris", "tampines", "clementi",
+    "hougang", "serangoon", "kallang", "jalan besar", "queenstown",
+    "marine parade", "bukit", "punggol", "sengkang", "bishan", "changi",
+    "sembawang", "sentosa", "orchard road", "bugis", "little india",
+    "hdb", "void deck", "hawker", "kopitiam", "heartland", "kampung", "warung",
+    "pasar", "desa", "angkringan", "kaki lima", "gotong royong",
+]
+CAT_FOREIGN = [
+    "netherlands", "europe", "germany", "france", "united states", "america",
+    "india", "thailand", "vietnam", "malaysia", "philippines", "china", "japan",
+    "korea", "australia", "brazil", "united kingdom", "england", "spain", "italy",
+    "portugal", "russia", "mexico", "canada", "belgium", "poland", "turkey",
+    "egypt", "ukraine", "austria", "switzerland", "denmark", "sweden", "norway",
+    "finland", "ireland", "scotland", "czech", "hungary", "romania", "greece",
+    "crete", "myanmar", "pakistan", "bangladesh", "sri lanka", "nepal", "saudi",
+    "dubai", "israel", "new zealand", "argentina", "chile", "peru", "colombia",
+    # 主要境外城市：Commons 分类常只写城市不写国名（Buses in Bangkok）
+    "bangkok", "kuala lumpur", "johor", "penang", "melbourne", "sydney",
+    "brisbane", "perth", "auckland", "london", "manchester", "edinburgh",
+    "new york", "los angeles", "chicago", "boston", "san francisco", "seattle",
+    "tokyo", "osaka", "kyoto", "seoul", "beijing", "shanghai", "guangzhou",
+    "shenzhen", "hong kong", "taipei", "mumbai", "delhi", "kolkata", "chennai",
+    "bangalore", "hyderabad", "karachi", "dhaka", "colombo", "kathmandu",
+    "abu dhabi", "istanbul", "cairo", "nairobi", "cape town", "toronto",
+    "vancouver", "montreal", "paris", "berlin", "munich", "hamburg", "amsterdam",
+    "brussels", "vienna", "zurich", "stockholm", "oslo", "copenhagen",
+    "helsinki", "warsaw", "prague", "budapest", "lisbon", "madrid", "barcelona",
+    "rome", "milan", "naples", "athens", "moscow", "kyiv",
+]
+
+# 境外词用整词匹配：否则 india 会命中 Indian Ocean（巴东、亚齐海岸），
+# china 会命中 Chinatown / Chinese cuisine（新加坡牛车水、华人菜系）。
+_FOREIGN_RX = re.compile(
+    r"\b(" + "|".join(re.escape(w) for w in CAT_FOREIGN) + r")\b")
+
+
+def region_from_cats(cats):
+    """用 Commons 分类判定地域。返回 'local' / 'foreign' / 'unknown'。
+
+    本地用子串匹配（宽松，多判 local 只会多留图，安全）；
+    境外用整词匹配（严格，避免 Indian Ocean / Chinatown 这类误杀）。
+    """
+    cl = (cats or "").lower()
+    parts = [p.strip() for p in re.findall(r"category:([^|]+)", cl)]
+    if any(any(w in p for w in CAT_LOCAL) for p in parts):
+        return "local"
+    if any(_FOREIGN_RX.search(p) for p in parts):
+        return "foreign"
+    return "unknown"
+
+
+# 「菜系/菜品 of 某国」说的是这道菜的来源，不是照片拍摄地。
+# 例：Category:Pork dishes of China 拍的是雅加达 Glodok 的 nasi campur tionghoa。
+CUISINE_RX = re.compile(
+    r"\b(cuisine|dishes?|foods?|drinks?|beverages?|cooking|recipes?)\b")
+
+
+def foreign_kind(cats):
+    """区分境外信号的性质：'place' 明确拍摄地 / 'cuisine' 只是菜系来源 / None。"""
+    cl = (cats or "").lower()
+    parts = [p.strip() for p in re.findall(r"category:([^|]+)", cl)]
+    kinds = []
+    for p in parts:
+        if _FOREIGN_RX.search(p):
+            kinds.append("cuisine" if CUISINE_RX.search(p) else "place")
+    if "place" in kinds:
+        return "place"
+    return "cuisine" if kinds else None
+
+
+# 标题里自带、且能一票定性的境外来源标记。
+# geograph.org.uk 只收英国/爱尔兰，Bestanddeelnr 是荷兰国家档案馆编号，
+# LCCN 是美国国会图书馆——这类图哪怕 Commons 分类只写到郡名，也一定是境外的。
+TITLE_FOREIGN_MARKS = ("geograph.org.uk", "bestanddeelnr", "lccn")
+
+
+def title_is_foreign(title):
+    """标题层面判定境外。cats 缺失或只写到郡名时的兜底。"""
+    t = (title or "").lower()
+    if any(m in t for m in TITLE_FOREIGN_MARKS):
+        return True
+    return bool(_FOREIGN_RX.search(t))
 
 
 def is_rejected(text):
@@ -912,7 +1063,7 @@ def _parse_pages(raw):
             "w": w,
             "h": h,
             "license": clean_html(em.get("LicenseShortName", {}).get("value", "")) or "见来源页",
-            "artist": clean_html(em.get("Artist", {}).get("value", ""))[:120],
+            "artist": clean_artist(em.get("Artist", {}).get("value", "")),
         })
     return out
 
@@ -1959,7 +2110,12 @@ def apply_clip(min_score=0.85, exclude=("标识",)):
     - exclude:   这些 CLIP 场景类不参与改判（CLIP 会滥用「标识」，只作过滤标记）
     """
     conn = db()
-    conn.execute("UPDATE photos SET scene_rule=scene WHERE scene_rule IS NULL")
+    # 快照只对非生活词图生效：生活图的场景由 LIFE_SCENE_MAP 决定，
+    # 若把生活场景写进 scene_rule，之后就没法退回原始判定。
+    _ph = "(" + ",".join("?" * len(_LIFE_TAG_SCENE)) + ")"
+    conn.execute("UPDATE photos SET scene_rule=scene WHERE scene_rule IS NULL "
+                 "AND (tags IS NULL OR tags NOT IN %s)" % _ph,
+                 tuple(_LIFE_TAG_SCENE))
     rows = conn.execute(
         "SELECT id, scene, clip_scene, clip_score, title, descr, tags, country, city "
         "FROM photos WHERE clip_done IS NOT NULL AND clip_scene IS NOT NULL "
@@ -1972,6 +2128,10 @@ def apply_clip(min_score=0.85, exclude=("标识",)):
             continue
         if r["clip_scene"] in exclude:
             skip_ex += 1
+            continue
+        # 生活词采集的图由 apply_life_scenes 按种子词落位，CLIP 没有摊贩/市集这些类别，
+        # 让它改判只会把生活图重新推回人文/建筑/街景。
+        if r["tags"] in _LIFE_TAG_SCENE:
             continue
         st = " ".join([r["title"] or "", r["descr"] or "", r["tags"] or "",
                        r["country"] or "", r["city"] or "",
@@ -2211,6 +2371,64 @@ def scan_categories(pause=0.8):
     print("分类查询完成 %d 个，黑白 %d，标识 %d，车辆 %d"
           % (total, g_cnt, s_cnt, c_cnt), flush=True)
     return total
+
+
+def quality_scan_fast(limit=None, workers=8, only_life=False, dry_run=False):
+    """多线程版画质扫描。
+
+    单线程按 0.35s 间隔跑 1.4 万张要 4 小时以上，实际一直没跑完，
+    导致 blur_score 大面积为空、前端清晰度过滤形同虚设。
+    这里用线程池并发下载缩略图，计算仍在工作线程，写库只在主线程，避免 SQLite 锁冲突。
+    """
+    from concurrent.futures import ThreadPoolExecutor
+
+    conn = db()
+    sql = ("SELECT id, thumb, tags FROM photos WHERE checked_at IS NULL")
+    if limit:
+        sql += " LIMIT %d" % int(limit)
+    rows = conn.execute(sql).fetchall()
+    if only_life:
+        life_tags = ({q for q, _ in LIFE_SEEDS} | {q for q, _ in LIFE_SEEDS_2}
+                     | {q for q, _ in DEVICE_SEEDS})
+        rows = [r for r in rows if r["tags"] in life_tags]
+    print("待检测 %d 张，并发 %d" % (len(rows), workers), flush=True)
+    if dry_run:
+        conn.close()
+        return len(rows)
+
+    def work(r):
+        url = thumbify(r["thumb"] or "", 250)
+        if not url:
+            return None
+        # 直连优先；被限流或 404 时退回 wsrv.nl 代理
+        for target in (url, wsrv(url, 250)):
+            try:
+                blur, ratio = analyze_image(http_get(target, timeout=25))
+                return r["id"], blur, ratio
+            except Exception:
+                continue
+        return None
+
+    done = 0
+    with ThreadPoolExecutor(max_workers=workers) as ex:
+        for res in ex.map(work, rows):
+            if not res:
+                continue
+            pid, blur, ratio = res
+            conn.execute(
+                "UPDATE photos SET blur_score=?, corner_score=?, wm_suspect=?, "
+                "checked_at=? WHERE id=?",
+                (blur, ratio, 1 if ratio >= CORNER_RATIO else 0,
+                 int(time.time()), pid))
+            done += 1
+            if done % 300 == 0:
+                conn.commit()
+                print("  已检测 %d/%d" % (done, len(rows)), flush=True)
+    conn.commit()
+    conn.close()
+    _facets_cache.clear()
+    print("画质检测完成 %d 张" % done, flush=True)
+    return done
 
 
 def quality_scan(limit=None, pause=0.35):
@@ -2455,6 +2673,289 @@ LIFE_CATEGORIES_2 = [
 ]
 
 
+# ---- 生活子场景映射 ----
+# 生活词种子天然带场景语义（warung=摊贩、pasar=市集、void deck=组屋底层），
+# 比 CLIP 硬套「人文/建筑/街景」准得多。按 tags 精确命中落场景，解决生活类堆在「其他」。
+# 新增的 6 个场景一律以映射为准；映射到既有场景的只做「填空」（仅当 scene 为「其他」），
+# 不覆盖 CLIP 已给出的可靠判断。
+LIFE_SCENES = ("摊贩", "市集", "街巷", "小店", "社区", "农渔")
+
+LIFE_SCENE_MAP = {
+    "摊贩": [
+        "warung makan", "warung tenda", "warung tegal", "warteg", "warung nasi",
+        "angkringan", "kaki lima", "pedagang kaki lima", "pedagang sayur",
+        "pedagang asongan", "pedagang buah", "pedagang ikan", "gerobak", "lapak",
+        "jual gorengan", "gorengan", "hawker stall", "hawker food",
+        "hawker centre table", "wet market stall",
+    ],
+    "市集": [
+        "pasar tradisional", "pasar pagi", "pasar malam", "pasar ikan",
+        "pasar sayur", "pasar kaget", "pasar subuh", "pasar loak", "pasar buah",
+        "pasar bunga", "pasar hewan", "tempat pelelangan ikan",
+        "wet market singapore", "pasar malam singapore", "Tekka Centre",
+        "Geylang Serai", "Tanglin Halt", "Ghim Moh", "Whampoa", "Balestier Market",
+    ],
+    "街巷": [
+        "kampung", "gang", "gapura", "void deck", "HDB corridor", "common corridor",
+        "HDB block", "lift lobby", "heartland singapore", "neighbourhood singapore",
+        "playground singapore", "neighbourhood park", "community garden singapore",
+        "Pulau Ubin village",
+        # 新加坡市镇：本质就是组屋街区，落「街巷」比堆在「其他」有用
+        "Alexandra", "Clementi", "Dakota", "Eunos", "Hougang", "Jalan Besar",
+        "Kallang", "Marine Parade", "Pasir Ris", "Paya Lebar", "Queenstown",
+        "Sembawang", "Serangoon", "Siglap", "Telok Kurau", "Zion Road",
+        "ang mo kio", "bedok", "commonwealth singapore", "jurong west",
+        "pasir panjang", "redhill singapore", "tiong bahru", "toa payoh",
+        "woodlands singapore", "yishun",
+    ],
+    "小店": [
+        "warung kopi", "warung sembako", "toko kelontong", "sembako", "kedai kopi",
+        "kedai makan", "rumah makan", "pangkas rambut indonesia", "tukang jahit",
+        "laundry kiloan", "warnet", "konter pulsa", "apotek", "toko emas", "bengkel",
+        "mama shop", "provision shop", "sundry shop", "kopitiam",
+        "coffee shop singapore", "konter hp", "toko hp", "gerai ponsel",
+        "servis hp", "toko komputer", "Sim Lim Square", "Funan mall",
+        "Challenger singapore", "Singtel shop",
+    ],
+    "社区": [
+        "pos ronda", "pos kamling", "balai desa", "kantor desa", "kerja bakti",
+        "gotong royong", "arisan", "pengajian", "kenduri", "hajatan", "posyandu",
+        "puskesmas", "masjid kampung", "upacara adat", "sekolah dasar",
+        "anak sekolah",
+    ],
+    "农渔": [
+        "sawah", "ladang", "kebun", "ternak", "kandang", "nelayan", "perahu",
+        "dermaga", "tambak", "petani", "panen", "Kranji", "Lim Chu Kang",
+        "Sungei Buloh",
+    ],
+    # ---- 以下只填空：CLIP 有对应类别，判得比映射细 ----
+    "交通": [
+        "ojek", "pangkalan ojek", "tukang becak", "becak", "delman", "bajaj",
+        "angkot", "terminal bus", "halte bus", "stasiun", "commuter line",
+        "cuci motor", "tukang parkir", "ojol", "driver ojol", "kurir paket",
+        "parkir mobil", "tempat parkir", "parkiran motor", "cuci mobil",
+        "bengkel mobil", "dealer mobil", "showroom mobil", "toyota avanza",
+        "honda beat", "honda vario", "yamaha nmax", "jalan tol", "lalu lintas",
+        "jembatan layang", "car park singapore", "petrol station singapore",
+        "expressway singapore", "car showroom singapore",
+    ],
+    "用餐": [
+        "kantin", "nasi campur", "nasi padang", "food court singapore",
+        "Old Airport Road", "Changi Village",
+    ],
+    "美食": [
+        "bakso", "mie ayam", "soto", "es teh", "kopi tubruk", "kueh", "laksa",
+        "nasi lemak", "roti prata", "murtabak", "bak kut teh", "char kway teow",
+        "hokkien mee", "teh tarik", "kaya toast", "zi char singapore",
+        "economy rice", "cai fan",
+    ],
+    "人文": [
+        "rumah warga", "dapur rumah", "ibu masak", "sumur", "lapangan bola",
+        "bulu tangkis", "layang-layang", "tukang", "batik",
+    ],
+    "数码": [
+        "isi pulsa", "kartu perdana", "main hp", "pakai hp", "laptop indonesia",
+        "meja kerja",
+    ],
+}
+
+_LIFE_TAG_SCENE = {s: sc for sc, seeds in LIFE_SCENE_MAP.items() for s in seeds}
+
+# 歧义种子：词本身是地名/多义词，抓回来的图未必是那个场景
+# （Sembawang 会带出船厂和军舰，Geylang Serai 会带出庙宇，gotong royong 还是一条河名）。
+# 这些只在「其他」时填空，不强行覆盖规则/CLIP 的判断。
+LIFE_SCENE_WEAK = {
+    # 新加坡市镇名
+    "Alexandra", "Clementi", "Dakota", "Eunos", "Hougang", "Jalan Besar",
+    "Kallang", "Marine Parade", "Pasir Ris", "Paya Lebar", "Queenstown",
+    "Sembawang", "Serangoon", "Siglap", "Telok Kurau", "Zion Road",
+    "ang mo kio", "bedok", "commonwealth singapore", "jurong west",
+    "pasir panjang", "redhill singapore", "tiong bahru", "toa payoh",
+    "woodlands singapore", "yishun", "Geylang Serai", "Old Airport Road",
+    "Changi Village",
+    # 多义词
+    "gotong royong", "tukang", "rumah warga", "sumur", "lapangan bola",
+    "bulu tangkis", "layang-layang", "bengkel", "sembako",
+}
+
+
+# ---- 场景兜底：用 Commons 分类反推 ----
+# 只收「名词性、无歧义」的分类短语。像 street / park / port 这类既能是场景又能是
+# 地名的词一概不收，宁可留在「其他」也不乱填。
+CAT_SCENE = [
+    ("海滩", ["beaches of", "beaches in", "beach", "coasts of", "coasts in",
+              "islands of", "islands in", "reefs", "jetties", "piers in"]),
+    ("建筑", ["temples in", "temples of", "mosques in", "mosques", "churches in",
+              "cathedrals", "museums in", "palaces", "monuments", "skylines",
+              "shophouses", "forts in", "ruins in", "stadia", "stadiums",
+              "buildings in", "houses in", "shopping malls", "prambanan",
+              "borobudur", "singapore flyer"]),
+    ("自然", ["mountains of", "mountains in", "volcanoes", "waterfalls", "lakes of",
+              "lakes in", "rivers of", "rivers in", "forests", "caves", "caves in",
+              "rice fields", "plantations", "gardens in", "parks in",
+              "botanic gardens", "sungei buloh"]),
+    ("交通", ["motorcycles in", "buses in", "railway stations", "airports in",
+              "ports and harbours", "ferries", "trains in", "roads in"]),
+    ("街景", ["markets in", "villages in", "towns in", "squares in",
+              "jalan malioboro", "clarke quay", "orchard road", "kampong glam",
+              "little india, singapore"]),
+    ("美食", ["food", "cuisine of", "restaurants in", "cafes in", "dishes of"]),
+    ("人文", ["people of", "festivals in", "ceremonies", "portraits"]),
+    ("住宿", ["hotels in", "resorts in", "villas in", "hostels"]),
+]
+
+
+def scene_from_cats(cats):
+    """从 Commons 分类反推场景。判不出返回 None。"""
+    cl = (cats or "").lower()
+    parts = [p.strip() for p in re.findall(r"category:([^|]+)", cl)]
+    for sc, kws in CAT_SCENE:
+        if any(any(k in p for k in kws) for p in parts):
+            return sc
+    return None
+
+
+def fill_scene_from_cats(dry_run=False):
+    """把仍为「其他」的图，用 Commons 分类补一个场景。只填空，不改已判好的。"""
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title, descr, tags, country, city, cats FROM photos "
+        "WHERE scene='其他'").fetchall()
+    stat, n = {}, 0
+    for r in rows:
+        sc = scene_from_cats(r["cats"])
+        if not sc:
+            continue
+        stat[sc] = stat.get(sc, 0) + 1
+        n += 1
+        if dry_run:
+            continue
+        st = " ".join([r["title"] or "", r["descr"] or "", r["tags"] or "",
+                       r["country"] or "", r["city"] or "", sc]).lower()
+        conn.execute("UPDATE photos SET scene=?, search_text=? WHERE id=?",
+                     (sc, st, r["id"]))
+    if not dry_run:
+        conn.commit()
+        _facets_cache.clear()
+    conn.close()
+    detail = "、".join("%s %d" % (k, v) for k, v in
+                       sorted(stat.items(), key=lambda x: -x[1]))
+    print("%s分类补场景 %d 条：%s"
+          % ("[DRY-RUN] " if dry_run else "", n, detail or "无变化"), flush=True)
+    return n
+
+
+def _base_scene(r):
+    """还原一张图在生活映射之前的场景：优先 CLIP 高置信，其次规则分类。"""
+    cs = r["clip_scene"]
+    if cs and cs != "标识" and (r["clip_score"] or 0) >= 0.85:
+        return cs
+    if r["scene_rule"]:
+        return r["scene_rule"]
+    return classify(r["title"] or "", r["descr"] or "", r["country"],
+                    fallback=r["tags"] or "")[2]
+
+
+def apply_life_scenes(dry_run=False):
+    """把生活词采集的图按种子词落到生活子场景。幂等，可反复跑。
+
+    - 目标是新增生活场景（摊贩/市集/…）：直接覆盖，CLIP 没有这些类别
+    - 目标是既有场景：只在当前为「其他」时填空，不推翻 CLIP
+    - 歧义种子（市镇名、多义词）：只填空；若之前被强行塞进生活场景，先退回规则/CLIP 判定
+    """
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title, descr, tags, country, city, scene, scene_rule, "
+        "clip_scene, clip_score FROM photos").fetchall()
+    stat, n = {}, 0
+    for r in rows:
+        sc = _LIFE_TAG_SCENE.get(r["tags"])
+        if not sc:
+            continue
+        cur = r["scene"]
+        weak = r["tags"] in LIFE_SCENE_WEAK
+
+        # 歧义种子被强行落位过：退回原判定
+        if weak and cur in LIFE_SCENES:
+            base = _base_scene(r)
+            if base != cur:
+                stat["退回"] = stat.get("退回", 0) + 1
+                n += 1
+                if not dry_run:
+                    st = " ".join([r["title"] or "", r["descr"] or "",
+                                   r["tags"] or "", r["country"] or "",
+                                   r["city"] or "", base]).lower()
+                    conn.execute("UPDATE photos SET scene=?, search_text=? WHERE id=?",
+                                 (base, st, r["id"]))
+                cur = base
+
+        if cur == sc:
+            continue
+        if weak and cur != "其他":
+            continue
+        if not weak and sc not in LIFE_SCENES and cur != "其他":
+            continue
+
+        stat[sc] = stat.get(sc, 0) + 1
+        n += 1
+        if dry_run:
+            continue
+        st = " ".join([r["title"] or "", r["descr"] or "", r["tags"] or "",
+                       r["country"] or "", r["city"] or "", sc]).lower()
+        conn.execute("UPDATE photos SET scene=?, search_text=? WHERE id=?",
+                     (sc, st, r["id"]))
+    if not dry_run:
+        conn.commit()
+        _facets_cache.clear()
+    conn.close()
+    detail = "、".join("%s %d" % (k, v) for k, v in
+                       sorted(stat.items(), key=lambda x: -x[1]))
+    print("%s生活场景落位 %d 条：%s"
+          % ("[DRY-RUN] " if dry_run else "", n, detail or "无变化"), flush=True)
+    return n
+
+
+def ingest_life_deep(pages=3, per=50, pause=0.8, batch=0, only=None):
+    """生活词深度翻页采集：每个种子往后翻 pages 页，专治「首页已饱和、加不进量」。
+
+    原来的 ingest_life 只取搜索首页，重跑等于空转（实测 warung makan 首页 8 条全在库）。
+    翻到第 2、3 页才是真正的新素材：实测 warung makan +84、kopitiam +115。
+    """
+    batches = [(1, LIFE_SEEDS, LIFE_CATEGORIES),
+               (2, LIFE_SEEDS_2, LIFE_CATEGORIES_2),
+               (3, DEVICE_SEEDS, DEVICE_CATEGORIES)]
+    if batch:
+        batches = [b for b in batches if b[0] == batch]
+    total = 0
+    started = time.time()
+
+    for bno, seeds, _cats in batches:
+        if only:
+            seeds = [s for s in seeds if only.lower() in s[0].lower()]
+        print("---- 第 %d 批 %d 个种子 × %d 页 ----" % (bno, len(seeds), pages), flush=True)
+        for i, (q, country) in enumerate(seeds, 1):
+            got = 0
+            for p in range(pages):
+                items = wikimedia_search(q, limit=per, offset=p * per)
+                if not items:
+                    break
+                for it in items:
+                    if upsert_photo(it, country, q):
+                        got += 1
+                if len(items) < per:
+                    break
+                time.sleep(pause)
+            total += got
+            print("[%d-%02d/%d] %-26s +%d（累计 %d）"
+                  % (bno, i, len(seeds), q, got, total), flush=True)
+            time.sleep(pause)
+
+    set_meta("last_life_deep_at", datetime.now().strftime("%Y-%m-%d %H:%M"))
+    set_meta("last_life_deep_added", str(total))
+    print("生活深度采集完成 +%d，用时 %ds" % (total, time.time() - started), flush=True)
+    return total
+
+
 def ingest_life(limit=40, batch=1, pause=1.8):
     """按生活场景关键词采集：街边摊、菜市场、小巷、组屋走廊这类真实日常。"""
     seeds = LIFE_SEEDS if batch == 1 else LIFE_SEEDS_2
@@ -2486,29 +2987,98 @@ def ingest_life(limit=40, batch=1, pause=1.8):
     return total
 
 
-def purge_life_noise():
-    """清理生活词采集里跑题的素材：标题和描述完全没有印尼/新加坡信号的一律删除。
+def purge_life_noise(dry_run=False):
+    """清理生活词采集里跑题的素材。
 
-    生活词（如 warung kopi、becak）在 Commons 上会捞回欧洲、南亚的同名场景，
-    这些照片标题往往只写地名或人名，没有任何本地语言特征。
+    改进：优先用 Commons 分类（cats 字段）判地域——人工维护、极精确，比只看标题文本可靠。
+    - cats 含印尼/新加坡地名分类 → 保留（local）
+    - cats 含境外国名分类 → 删除（foreign，如意大利/印度/马来西亚的 Nasi Goreng、Burger King）
+    - cats 无国名信号（如只有 Category:Nasi goreng 这类菜名分类）→ 保守保留（unknown），
+      因为 life 种子词本身就是地域信号，且宁可漏杀境外也不误杀本地；
+      仅当标题明确含境外词时才删。
+
+    dry_run=True 时只统计会删除的数量，不实际改动库。
     """
     life_tags = ({q for q, _ in LIFE_SEEDS} | {q for q, _ in LIFE_SEEDS_2}
                  | {q for q, _ in DEVICE_SEEDS})
     conn = db()
-    rows = conn.execute("SELECT id, title, descr, tags FROM photos").fetchall()
+    rows = conn.execute(
+        "SELECT id, title, descr, tags, cats FROM photos").fetchall()
     killed = 0
     for r in rows:
         if r["tags"] not in life_tags:
             continue
-        blob = " ".join([r["title"] or "", r["descr"] or ""])
-        if not has_region_signal(blob):
+        reg = region_from_cats(r["cats"])
+        if reg == "local":
+            continue
+        # unknown：cats 无国名信号。这类多为「Category:Nasi goreng」式菜名分类，
+        # 是真本地图；且「china」作子串会误伤 chinatown，故保守保留，不删。
+        if reg == "foreign":
+            if dry_run:
+                killed += 1
+                continue
             conn.execute("DELETE FROM photos WHERE id=?", (r["id"],))
             killed += 1
+    if dry_run:
+        print("[DRY-RUN] 生活词会清理 %d 条（未实际删除）" % killed, flush=True)
+        conn.close()
+        return killed
     conn.commit()
     left = conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"]
     conn.close()
     print("生活词清理 %d 条，剩余 %d 条" % (killed, left), flush=True)
     return killed
+
+
+def purge_foreign_all(dry_run=False):
+    """全库地域清理：country 标为印尼/新加坡，但 Commons 分类指向境外的，从库里摘掉。
+
+    分两种处置，避免误杀本地图：
+    - 分类给出明确拍摄地（Category:Buses in Bangkok / 2018 in Bavaria）→ 删除
+    - 分类只是菜系来源（Pork dishes of China，实拍雅加达 Glodok）→ 隐藏，可恢复
+
+    只处理 region_from_cats() == 'foreign' 的，unknown 一律不动（宁漏勿错杀）。
+    """
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title, country, tags, cats FROM photos "
+        "WHERE country IN ('印度尼西亚','新加坡')").fetchall()
+    killed = hidden = 0
+    for r in rows:
+        reg = region_from_cats(r["cats"])
+        if reg == "local":
+            continue
+        by_title = False
+        if reg == "unknown":
+            # 分类缺失/只写到郡名时，用标题兜底（geograph、荷兰档案馆编号等）
+            if not title_is_foreign(r["title"]):
+                continue
+            by_title = True
+        kind = "place" if by_title else foreign_kind(r["cats"])
+        if dry_run:
+            if kind == "cuisine":
+                hidden += 1
+            else:
+                killed += 1
+            continue
+        if kind == "cuisine":
+            conn.execute("UPDATE photos SET hidden=1 WHERE id=?", (r["id"],))
+            hidden += 1
+        else:
+            conn.execute("DELETE FROM photos WHERE id=?", (r["id"],))
+            killed += 1
+    if dry_run:
+        print("[DRY-RUN] 全库地域清理：删 %d 条、隐藏 %d 条（未实际改动）"
+              % (killed, hidden), flush=True)
+        conn.close()
+        return killed + hidden
+    conn.commit()
+    left = conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"]
+    conn.close()
+    _facets_cache.clear()
+    print("全库地域清理：删除 %d 条、隐藏 %d 条，剩余 %d 条"
+          % (killed, hidden, left), flush=True)
+    return killed + hidden
 
 
 # 第三批：数码设备与汽车的使用场景
@@ -2774,7 +3344,10 @@ def search_photos(q, country="", city="", scene="", orient="", only_saved=False,
     if city:
         where.append("city=?")
         args.append(city)
-    if scene:
+    if scene == "__life":
+        where.append("scene IN (%s)" % ",".join("?" * len(LIFE_SCENES)))
+        args.extend(LIFE_SCENES)
+    elif scene:
         where.append("scene=?")
         args.append(scene)
     if orient:
@@ -3196,7 +3769,19 @@ def main():
             purge_rejected()
             return
         if cmd == "clean_life":
-            purge_life_noise()
+            purge_life_noise(dry_run=("--dry" in sys.argv))
+            return
+        if cmd == "clean_foreign":
+            purge_foreign_all(dry_run=("--dry" in sys.argv))
+            return
+        if cmd == "life_scenes":
+            apply_life_scenes(dry_run=("--dry" in sys.argv))
+            return
+        if cmd == "fill_scene":
+            fill_scene_from_cats(dry_run=("--dry" in sys.argv))
+            return
+        if cmd == "fix_meta":
+            fix_artists(dry_run=("--dry" in sys.argv))
             return
         if cmd == "graphics":
             sc = sys.argv[2] if len(sys.argv) > 2 and sys.argv[2] != "-" else None
@@ -3247,6 +3832,13 @@ def main():
         if cmd == "quality":
             quality_scan(limit=int(sys.argv[2]) if len(sys.argv) > 2 else None)
             return
+        if cmd == "quality_fast":
+            quality_scan_fast(
+                limit=int(sys.argv[2]) if len(sys.argv) > 2 and sys.argv[2] != "-" else None,
+                workers=int(sys.argv[3]) if len(sys.argv) > 3 else 8,
+                only_life=("--life" in sys.argv),
+                dry_run=("--dry" in sys.argv))
+            return
         if cmd == "expand":
             sub = int(sys.argv[2]) if len(sys.argv) > 2 else 12
             pgs = int(sys.argv[3]) if len(sys.argv) > 3 else 2
@@ -3255,6 +3847,12 @@ def main():
         if cmd == "life":
             ingest_life(limit=int(sys.argv[2]) if len(sys.argv) > 2 else 40,
                         batch=int(sys.argv[3]) if len(sys.argv) > 3 else 1)
+            return
+        if cmd == "life_deep":
+            ingest_life_deep(
+                pages=int(sys.argv[2]) if len(sys.argv) > 2 else 3,
+                per=int(sys.argv[3]) if len(sys.argv) > 3 else 50,
+                batch=int(sys.argv[4]) if len(sys.argv) > 4 else 0)
             return
         if cmd == "device":
             ingest_device(limit=int(sys.argv[2]) if len(sys.argv) > 2 else 40)

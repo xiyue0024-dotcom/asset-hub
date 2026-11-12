@@ -29,6 +29,20 @@ jobs:
           PIXABAY_API_KEY: ${{ secrets.PIXABAY_API_KEY }}
         run: python server.py update
 
+      # 新增的图必须过质量门禁，否则会直接以「其他」场景、脏作者名进站。
+      # 顺序有讲究：先补 Commons 分类（地域/场景判定的依据）→ 重算标记 → 清垃圾
+      # → 清境外 → 落场景 → 补场景 → 洗作者 → 画质评分
+      - name: 质量门禁
+        run: |
+          python server.py cats
+          python server.py from_cats
+          python server.py clean
+          python server.py clean_foreign
+          python server.py life_scenes
+          python server.py fill_scene
+          python server.py fix_meta
+          python server.py quality 400
+
       - name: 导出静态站点
         run: python build_static.py
 
