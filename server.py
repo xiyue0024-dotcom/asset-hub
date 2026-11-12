@@ -678,6 +678,8 @@ CAT_LOCAL = [
     "hougang", "serangoon", "kallang", "jalan besar", "queenstown",
     "marine parade", "bukit", "punggol", "sengkang", "bishan", "changi",
     "sembawang", "sentosa", "orchard road", "bugis", "little india",
+    "paya lebar", "siglap", "eunos", "telok kurau", "zion road", "redhill",
+    "commonwealth", "pasir panjang", "jurong west", "woodlands", "boon lay",
     "hdb", "void deck", "hawker", "kopitiam", "heartland", "kampung", "warung",
     "pasar", "desa", "angkringan", "kaki lima", "gotong royong",
 ]
@@ -702,6 +704,8 @@ CAT_FOREIGN = [
     "brussels", "vienna", "zurich", "stockholm", "oslo", "copenhagen",
     "helsinki", "warsaw", "prague", "budapest", "lisbon", "madrid", "barcelona",
     "rome", "milan", "naples", "athens", "moscow", "kyiv",
+    # 与新加坡地名同名的美国州名，必须精确到州才判
+    "north dakota", "south dakota",
 ]
 
 # 境外词用整词匹配：否则 india 会命中 Indian Ocean（巴东、亚齐海岸），
@@ -3073,12 +3077,39 @@ def purge_foreign_all(dry_run=False):
         conn.close()
         return killed + hidden
     conn.commit()
-    left = conn.execute("SELECT COUNT(*) c FROM photos").fetchone()["c"]
+
+    # 第二遍：市镇名/多义词种子（Dakota 撞上美国北达科他、woodlands 撞上德州）
+    # 分类查得到、但既非本地也非境外，标题又没有本地信号 → 基本可以确定是撞名捞回来的。
+    # cats 为空的不动：那是没查到分类，不是判成境外。
+    weak_killed = 0
+    rows2 = conn.execute(
+        "SELECT id, title, tags, cats FROM photos "
+        "WHERE hidden=0 AND country IN ('印度尼西亚','新加坡')").fetchall()
+    for r in rows2:
+        if r["tags"] not in LIFE_SCENE_WEAK:
+            continue
+        # Dakota / Alexandra 是真歧义：新加坡有 Dakota Crescent、Alexandra Road，
+        # 美国的北达科他靠 CAT_FOREIGN 精确命中，这里不再用「无本地信号」一刀切。
+        if r["tags"] in ("Dakota", "Alexandra"):
+            continue
+        if not (r["cats"] or "").strip():
+            continue
+        if region_from_cats(r["cats"]) != "unknown":
+            continue
+        if has_region_signal(r["title"] or ""):
+            continue
+        # 只隐藏不删除：这条规则靠「没有本地信号」反推，会有 Boon Lay、Pusdik Armed
+        # 这类分类写得太粗的本地图被误判，隐藏可恢复，删除不可逆。
+        conn.execute("UPDATE photos SET hidden=1 WHERE id=?", (r["id"],))
+        weak_killed += 1
+    conn.commit()
+
+    left = conn.execute("SELECT COUNT(*) c FROM photos WHERE hidden=0").fetchone()["c"]
     conn.close()
     _facets_cache.clear()
-    print("全库地域清理：删除 %d 条、隐藏 %d 条，剩余 %d 条"
-          % (killed, hidden, left), flush=True)
-    return killed + hidden
+    print("全库地域清理：删除 %d 条、隐藏 %d 条、撞名种子隐藏 %d 条，剩余可见 %d 条"
+          % (killed, hidden, weak_killed, left), flush=True)
+    return killed + hidden + weak_killed
 
 
 # 第三批：数码设备与汽车的使用场景
