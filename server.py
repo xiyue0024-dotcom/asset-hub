@@ -706,6 +706,9 @@ CAT_FOREIGN = [
     "rome", "milan", "naples", "athens", "moscow", "kyiv",
     # 与新加坡地名同名的美国州名，必须精确到州才判
     "north dakota", "south dakota",
+    # 非 ASCII 变体：整词正则不会把 Zürich 折成 zurich
+    "zürich", "münchen", "köln", "wien", "praha", "são paulo", "montréal",
+    "nz",
 ]
 
 # 境外词用整词匹配：否则 india 会命中 Indian Ocean（巴东、亚齐海岸），
@@ -3096,7 +3099,7 @@ def purge_foreign_all(dry_run=False):
             continue
         if region_from_cats(r["cats"]) != "unknown":
             continue
-        if has_region_signal(r["title"] or ""):
+        if has_region_signal(r["title"] or "") and not title_is_foreign(r["title"]):
             continue
         # 只隐藏不删除：这条规则靠「没有本地信号」反推，会有 Boon Lay、Pusdik Armed
         # 这类分类写得太粗的本地图被误判，隐藏可恢复，删除不可逆。
@@ -3110,6 +3113,47 @@ def purge_foreign_all(dry_run=False):
     print("全库地域清理：删除 %d 条、隐藏 %d 条、撞名种子隐藏 %d 条，剩余可见 %d 条"
           % (killed, hidden, weak_killed, left), flush=True)
     return killed + hidden + weak_killed
+
+
+# 英文泛词种子：Commons 全文检索是「任一词命中」，搜 car showroom singapore
+# 会捞回英国的车行、搜 economy rice 会捞回尼日利亚的碾米厂。
+# 这些种子产出的图，只要标题/描述/分类都没有本地信号，基本可以断定是跑题的。
+GENERIC_SEEDS = {
+    "car showroom singapore", "petrol station singapore", "expressway singapore",
+    "car park singapore", "Singtel shop", "Challenger singapore", "Funan mall",
+    "Sim Lim Square", "isi pulsa", "kartu perdana", "main hp", "pakai hp",
+    "meja kerja", "laptop indonesia", "economy rice", "cai fan",
+    "food court singapore", "coffee shop singapore", "hawker food",
+    "hawker stall", "warung food", "wet market stall", "hawker centre table",
+    "provision shop", "sundry shop", "mama shop", "common corridor",
+    "lift lobby", "HDB block", "neighbourhood park",
+    "community garden singapore", "playground singapore",
+    "Indonesian dining table", "Category:Indonesian dining table",
+}
+
+
+def purge_generic_noise(dry_run=False):
+    """隐藏英文泛词种子捞回来的跑题图。只隐藏不删除，可恢复。"""
+    conn = db()
+    rows = conn.execute(
+        "SELECT id, title, descr, tags, cats FROM photos WHERE hidden=0").fetchall()
+    n = 0
+    for r in rows:
+        if r["tags"] not in GENERIC_SEEDS:
+            continue
+        if region_from_cats(r["cats"]) == "local":
+            continue
+        if has_region_signal((r["title"] or "") + " " + (r["descr"] or "")):
+            continue
+        n += 1
+        if not dry_run:
+            conn.execute("UPDATE photos SET hidden=1 WHERE id=?", (r["id"],))
+    if not dry_run:
+        conn.commit()
+        _facets_cache.clear()
+    conn.close()
+    print("%s英文泛词种子隐藏 %d 条" % ("[DRY-RUN] " if dry_run else "", n), flush=True)
+    return n
 
 
 # 第三批：数码设备与汽车的使用场景
@@ -3804,6 +3848,9 @@ def main():
             return
         if cmd == "clean_foreign":
             purge_foreign_all(dry_run=("--dry" in sys.argv))
+            return
+        if cmd == "clean_generic":
+            purge_generic_noise(dry_run=("--dry" in sys.argv))
             return
         if cmd == "life_scenes":
             apply_life_scenes(dry_run=("--dry" in sys.argv))

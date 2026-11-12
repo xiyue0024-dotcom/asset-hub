@@ -38,6 +38,7 @@ jobs:
           python server.py from_cats
           python server.py clean
           python server.py clean_foreign
+          python server.py clean_generic
           python server.py life_scenes
           python server.py fill_scene
           python server.py fix_meta
