@@ -111,7 +111,7 @@ h1,h2,h3,p,dl,dd,dt,figure{margin:0}
 .chips{display:flex;gap:8px;flex-wrap:wrap}
 
 .flabel{font-size:12.5px;color:var(--muted);letter-spacing:.3px}
-.qinfo{font-size:12px;color:#A8A69E;margin-left:2px}
+.qinfo{font-size:12px;color:#A8A69E;margin-left:auto}
 .chip{
   border:1px solid var(--line);background:#fff;border-radius:999px;
   padding:5px 13px;font-size:12.5px;color:var(--muted);cursor:pointer;transition:.15s;
@@ -120,6 +120,42 @@ h1,h2,h3,p,dl,dd,dt,figure{margin:0}
 .chip:hover{border-color:#C9C7C0;color:var(--ink-2)}
 .chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 .chip i{font-style:normal;font-size:11px;opacity:.6}
+.chip.on i{opacity:.85}
+
+/* ---------- 新分类筛选（数据驱动的分组） ---------- */
+.fhead{display:flex;align-items:center;gap:10px;padding-bottom:2px}
+.fhead-t{font-size:12px;color:var(--muted);letter-spacing:.6px;flex:none}
+.fsum{
+  font-size:12.5px;color:var(--ink-2);background:#F1F0EC;border-radius:6px;
+  padding:4px 10px;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
+.fsum.active{background:var(--accent-soft);color:var(--accent)}
+.ghost.sm{margin-left:auto;padding:4px 10px;font-size:12px}
+.ghost.sm + .ghost.sm{margin-left:0}
+
+.taxgroups{display:flex;flex-direction:column;gap:7px}
+.taxgroups.folded{display:none}
+.taxgroup{display:flex;align-items:flex-start;gap:12px;min-height:28px}
+.taxlabel{
+  flex:none;width:60px;padding-top:6px;font-size:12px;color:var(--muted);
+  letter-spacing:.3px;cursor:help;
+}
+.taxgroup .chips{flex:1;min-width:0}
+.taxgroup .chip{padding:4px 11px;font-size:12px}
+
+.ftools{border-top:1px solid var(--line-2);padding-top:10px;padding-bottom:8px}
+.kbd-hint{font-size:11.5px;color:#A8A69E}
+.kbd-hint kbd{
+  font-family:inherit;border:1px solid var(--line);border-bottom-width:2px;
+  border-radius:4px;padding:0 4px;background:#fff;font-size:11px;color:var(--ink-2);
+}
+
+/* ---------- 灯箱计数 ---------- */
+.lb-count{
+  position:absolute;bottom:14px;left:50%;transform:translateX(-50%);
+  background:rgba(14,16,18,.62);color:#fff;font-size:11.5px;letter-spacing:.4px;
+  padding:3px 10px;border-radius:999px;pointer-events:none;
+}
 
 /* ---------- 主体 ---------- */
 main{padding:6px 28px 80px}
@@ -149,26 +185,28 @@ main{padding:6px 28px 80px}
 }
 .card:hover img{transform:scale(1.025)}
 
+/* 信息常驻：纯图素材没有 hover 也能读到分类信息；图片不被渐变遮挡。 */
 .cap{
-  position:absolute;left:0;right:0;bottom:0;padding:26px 12px 10px;
-  background:linear-gradient(to top,rgba(12,14,16,.78),rgba(12,14,16,.28) 55%,transparent);
-  opacity:0;transform:translateY(6px);transition:.25s;pointer-events:none;
+  padding:9px 11px 10px;background:var(--surface);
+  border-top:1px solid var(--line-2);
 }
-.card:hover .cap{opacity:1;transform:none}
 .cap-t{
-  display:block;color:#fff;font-size:12.5px;font-weight:500;
+  display:block;color:var(--ink);font-size:12.5px;font-weight:500;
   overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
 }
-.cap-m{display:block;color:rgba(255,255,255,.72);font-size:11px;margin-top:2px}
+.cap-m{
+  display:block;color:var(--muted);font-size:11px;margin-top:2px;
+  overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
+}
 
 .fav{
   position:absolute;top:9px;right:9px;width:28px;height:28px;border-radius:50%;
-  border:0;background:rgba(255,255,255,.9);color:#4A4F55;font-size:14px;line-height:1;
-  cursor:pointer;display:grid;place-items:center;opacity:0;transition:.2s;
+  border:0;background:rgba(255,255,255,.88);color:#4A4F55;font-size:14px;line-height:1;
+  cursor:pointer;display:grid;place-items:center;
+  opacity:.72;transition:opacity .2s,background .2s,transform .2s;
 }
-.card:hover .fav{opacity:1}
+.card:hover .fav{opacity:1;transform:scale(1.06)}
 .fav.on{opacity:1;background:#fff;color:#C0392B}
-.fav:hover{background:#fff}
 
 .lic{
   position:absolute;top:9px;left:9px;padding:3px 7px;border-radius:5px;
@@ -272,6 +310,16 @@ main{padding:6px 28px 80px}
   .topmeta{display:none}
   .filters{padding:12px 14px 0}
   main{padding:4px 14px 60px}
+  .taxgroup{flex-direction:column;gap:4px}
+  .taxlabel{width:auto;padding-top:0}
+  .taxgroup .chips{
+    flex-wrap:nowrap;overflow-x:auto;padding-bottom:6px;
+    scrollbar-width:thin;-webkit-overflow-scrolling:touch;
+  }
+  .taxgroup .chip{flex:none}
+  .kbd-hint{display:none}
+  .fhead{flex-wrap:wrap}
+  .fsum{max-width:100%;order:3;flex-basis:100%}
   .lb-body{flex-direction:column;height:94vh;width:96vw}
   .lb-side{width:100%;height:44%;border-left:0;border-top:1px solid var(--line)}
   .lb-stage{height:56%}

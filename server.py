@@ -24,12 +24,16 @@ import urllib.request
 from datetime import datetime
 from http.server import ThreadingHTTPServer, BaseHTTPRequestHandler
 
+import taxonomy  # TG 分类契约（单一事实源）
+
 ROOT = os.path.dirname(os.path.abspath(__file__))
 WEB = os.path.join(ROOT, "web")
 DATA = os.path.join(ROOT, "data")
 CACHE = os.path.join(DATA, "imgcache")
 DB = os.path.join(DATA, "library.db")
+TG_PHOTOS = os.path.join(DATA, "tg_photos")
 os.makedirs(CACHE, exist_ok=True)
+os.makedirs(TG_PHOTOS, exist_ok=True)
 os.makedirs(WEB, exist_ok=True)
 
 UA = "AssetHub/1.0 (personal material library; local use)"
@@ -960,11 +964,19 @@ def purge_nonphoto(dry_run=False):
 
 def upsert_photo(item, country_hint, tag):
     """写入一条素材。source_id / 标题重复则跳过。返回 True 表示新增。"""
-    if not is_photo_file(item.get("title")):
-        return False
-    blob = " ".join([item.get("title", ""), item.get("descr", "")])
-    if is_rejected(blob):
-        return False
+    if item.get("source") == "telegram":
+        # TG 的 title 是帖子文案而非文件名，改看 full/thumb 的扩展名判断位图。
+        # Commons 的「中文标题且无地域信号即拒绝」不适用于 TG 中文文案：
+        # TG 已在上游 tg_guard 闸门做过红线判定，这里不再二次拒绝。
+        probe = (item.get("full") or item.get("thumb") or "").rsplit("/", 1)[-1]
+        if not is_photo_file(probe):
+            return False
+    else:
+        if not is_photo_file(item.get("title")):
+            return False
+        blob = " ".join([item.get("title", ""), item.get("descr", "")])
+        if is_rejected(blob):
+            return False
 
     country, city, scene = classify(item.get("title", ""), item.get("descr", ""),
                                     country_hint, fallback=tag or "")
@@ -3541,10 +3553,19 @@ def search_photos(q, country="", city="", scene="", orient="", only_saved=False,
                   page=1, per=24, min_pixels=0, hide_blur=False, hide_wm=False,
                   hide_selfie=False, hide_solo=False, hide_dated=False,
                   hide_people=False, hide_graphic=False,
-                  hide_gray=False, hide_car=False, hide_junk=False):
-    """精确优先的检索：全部关键词命中才算精确匹配；否则降级为弱匹配并显式标注。"""
+                  hide_gray=False, hide_car=False, hide_junk=False, tax=None):
+    """精确优先的检索：全部关键词命中才算精确匹配；否则降级为弱匹配并显式标注。
+
+    tax: 新 TG 分类筛选，形如 {"region":"新加坡","channel":"sucai_so"}。
+         命中 tags 字段里的结构化标签，维度之间取 AND、同一维度单选。
+    """
     conn = db()
     where, args = ["hidden=0"], []
+    for k, v in (tax or {}).items():
+        if k in taxonomy.DIM_KEYS and v:
+            # tags 首尾带空格，用 ' key:value ' 精确匹配，避免频道名前缀串味
+            where.append("INSTR(COALESCE(tags,''), ?) > 0")
+            args.append(" %s:%s " % (k, v))
     if country:
         where.append("country=?")
         args.append(country)
@@ -3648,6 +3669,9 @@ def search_photos(q, country="", city="", scene="", orient="", only_saved=False,
         d.pop("search_text", None)
         d["match"] = pct
         d["weak"] = weak
+        # 分类值由 taxonomy.py 计算后下发，前端不重复实现规则
+        c = taxonomy.classify(d)
+        d["tax"] = [c[k] for k in taxonomy.DIM_KEYS]
         items.append(d)
 
     return {
@@ -3733,6 +3757,9 @@ def facets(country=""):
     }
     conn.close()
 
+    # 2026-11-14 起由 taxonomy.py 统一提供分类维度与计数，前端不再硬编码选项。
+    tf = taxonomy.facet_counts(DB)
+
     result = {
         "total": total,
         "saved": saved,
@@ -3743,6 +3770,9 @@ def facets(country=""):
         "cities": [{"name": r["city"], "count": r["c"]} for r in cities],
         "scenes": [{"name": r["scene"], "count": r["c"]} for r in scenes],
         "countries": [{"name": r["country"], "count": r["c"]} for r in by_country],
+        "taxonomy": tf["dimensions"],
+        "tax_counts": tf["counts"],
+        "tax_total": tf["total"],
     }
     _facets_cache[country] = (now, result)
     return result
@@ -3764,6 +3794,17 @@ def sniff_type(b):
 
 
 def fetch_image(url):
+    # 本地 Telegram 抓取图：tgfile://<文件名> 直接从 data/tg_photos/ 读，不联网。
+    # 前端 proxyUrl 会把它包成 /img?u=tgfile%3A%2F%2F...，本函数识别后本地读盘。
+    if url.startswith("tgfile://"):
+        name = os.path.basename(url[len("tgfile://"):])
+        if name:
+            fpath = os.path.join(TG_PHOTOS, name)
+            if os.path.exists(fpath):
+                with open(fpath, "rb") as f:
+                    data = f.read()
+                return data, sniff_type(data)
+        raise FileNotFoundError("tgfile not found: %s" % url)
     key = hashlib.sha1(url.encode("utf-8")).hexdigest()
     path = os.path.join(CACHE, key + ".bin")
     if os.path.exists(path):
@@ -3837,23 +3878,17 @@ class Handler(BaseHTTPRequestHandler):
                                   CONTENT_TYPES.get(ext, "application/octet-stream"))
 
             if path == "/api/search":
+                tax = {}
+                for k in taxonomy.DIM_KEYS:
+                    v = one("tax_" + k)
+                    if v:
+                        tax[k] = v
                 return self._json(search_photos(
-                    q=one("q"), country=one("country"), city=one("city"),
-                    scene=one("scene"), orient=one("orient"),
+                    q=one("q"),
                     only_saved=one("saved") == "1",
                     page=max(1, int(one("page", "1") or 1)),
                     per=min(60, max(6, int(one("per", "24") or 24))),
-                    min_pixels=int(one("minpx", "0") or 0),
-                    hide_blur=one("noblur") == "1",
-                    hide_wm=one("nowm") == "1",
-                    hide_selfie=one("noselfie") == "1",
-                    hide_solo=one("nosolo") == "1",
-                    hide_dated=one("nodate") == "1",
-                    hide_people=one("nopeople") == "1",
-                    hide_graphic=one("nogfx") == "1",
-                    hide_gray=one("nogray") == "1",
-                    hide_car=one("nocar") == "1",
-                    hide_junk=one("nojunk") == "1",
+                    tax=tax,
                 ))
 
             if path == "/api/hide":
@@ -4107,7 +4142,11 @@ def main():
 
     cfg = load_config()
     hour = int(cfg.get("auto_update_hour", 7))
-    if cfg.get("auto_update", True):
+    # 2026-11-14：素材源已全量切换为 Telegram，本地服务不再自动采集 Commons。
+    # 旧默认 True 会在每次启动 server.py 时立刻跑一轮 update_latest()，
+    # 把 Commons 记录重新灌回库（曾导致 45 条 wikimedia 混入）。
+    # 需要恢复时须在 config.json 显式写 "auto_update": true。
+    if cfg.get("auto_update", False):
         threading.Thread(target=scheduler_loop, args=(hour,), daemon=True).start()
 
     srv = ThreadingHTTPServer(("127.0.0.1", PORT), Handler)

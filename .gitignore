@@ -1,8 +1,13 @@
 # 图片磁盘缓存，体积大且可随时重建
 data/imgcache/
+# Telegram 抓取原图（个人素材，不入仓）
+data/tg_photos/
 
 # 本地密钥，不要提交
 config.json
+tg_config.py
+tg_session.session
+tg_review.csv
 
 # Python
 __pycache__/
@@ -17,6 +22,11 @@ __pycache__/
 # 调试截图
 *.png
 !brand/**
+# 例外：静态站里的 TG 图片必须入库才能上线（*.png 规则会误伤）
+!docs/tg/**
+
+# 清空素材库前的备份（含 35MB DB + 12MB 索引），只留本地不入仓
+data/_backup_*/
 
 # CLIP 模型权重，体积大且可重新下载
 data/clip/

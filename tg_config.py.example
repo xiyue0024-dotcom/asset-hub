@@ -1,0 +1,6 @@
+# Telegram 抓取器配置样例。
+# 复制本文件为 tg_config.py（已被 .gitignore 忽略，不会提交），填入你自己的值。
+# 申请地址：https://my.telegram.org  →  "API development tools"  →  建一个 App，
+# 拿到 api_id（数字）与 api_hash（字符串）。这是你个人的凭据，切勿外泄。
+TG_API_ID = "你的_api_id_数字"
+TG_API_HASH = "你的_api_hash_字符串"

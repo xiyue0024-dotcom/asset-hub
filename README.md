@@ -123,17 +123,20 @@ Settings → Actions → General → Workflow permissions → 选 `Read and writ
 
 不然每日更新跑完推不回去。
 
-**4. 自动更新已经配好**
+**4. 自动更新已停用（2026-11-14 起）**
 
-`.github/workflows/update.yml` 会在**每天 UTC 23:00（北京时间 07:00）**自动执行：
+素材源改为 Telegram、且抓取需要本机会话，`.github/workflows/update.yml` 的定时任务与自动采集/提交**全部停用**，只保留一条说明性 step。继续跑旧流水线会把已清空的 Commons 素材重新灌回并自动推到公开 Pages。
 
+现在的发布流程完全走本机：
+
+```bash
+python tg_fetch.py --run     # 抓 TG 生活图，过红线闸门后入库
+python build_static.py       # 导出 docs/，TG 图复制进 docs/tg/
+# 人工确认内容后：
+git add docs data/library.db && git commit -m "..." && git push
 ```
-python server.py update   # 按分类抓最新素材
-python build_static.py    # 重新导出 docs/
-git commit & push         # 页面自动重建
-```
 
-也可以在 Actions 页面点 `Run workflow` 手动触发。
+> 上文第 1～3 节里关于 `server.py update / expand`、Commons 分类增量、Windows 计划任务、每日质量门禁的内容，是 **Commons 时期的历史说明，现已不适用**，保留仅供回溯。
 
 ### 静态版的三个限制
 1. **不能「下载原图」**。跨域链接的 `download` 属性浏览器会忽略，所以按钮改成「打开原图」，在新标签页右键另存。
@@ -391,12 +394,39 @@ python server.py fix_meta
 | 时间排序跑题 | 按上传时间搜 `Bali beach`，返回音乐人照片 | 改用分类抓取，不用时间排序 |
 | **相关度不足仍返回** | 搜「苹果耳机」推 iPhone 图，标 52% 相关度还当结果给 | **全部关键词必须命中**，否则降级为弱匹配并显式警告，无匹配则返回空 |
 
-## Telegram 素材频道：红线与闸门
+## 分类结构（2026-11-14 重构）
 
-外部 Telegram 频道不能作为素材来源，原因有两个硬事实：
+素材源切换为 Telegram 后，旧的「城市 / 场景 / 8 项质量过滤」失去数据支撑（675 条实测：city 671 条为「其他」、scene 664 条为「其他」、8 个质量字段全部为 0）。因此废弃旧分类，改为只使用 TG 数据 100% 有值的客观字段。
 
-1. **拿不到原图**。`t.me/s/` 网页预览只输出 600×800、约 100KB 的 JPEG（实测 19 张全部如此），不到 0.5MP，连本站「只看高清」的 1MP 门槛都过不了。Commons 给的是 1920px 起、常见 3000–6000px。
-2. **频道本身不是素材站**。实测的 8 个「印尼素材 / 新加坡素材」频道里，有 4 个同时投放证件套图、人设话术、精聊话术、引流教程这类内容，属于诈骗物料。
+**`taxonomy.py` 是唯一事实源**：选项、命名、归类范围与边界只在这里定义；`/api/facets` 与 `library.js` 把它下发给前端，本地版和静态版都不硬编码选项，抓取器入库也调用同一份规则。
+
+| 维度 | 选项 | 归类范围 | 边界（避免重复与遗漏） |
+|---|---|---|---|
+| 地域 | 印度尼西亚 / 新加坡 / 未判定 | 频道名与文案的地域强信号 | 无信号、或两国信号同时命中 → 「未判定」；绝不按图片内容猜测 |
+| 来源频道 | 8 个频道 + 其他频道 | `artist` 字段 | 不在列表内 → 「其他频道」，保证完备 |
+| 画幅 | 竖版 / 横版 / 方图 | `width`/`height`，阈值 1.12 | 宽高缺失 → 「方图」兜底 |
+| 清晰度 | 高清 ≥2MP / 标清 1–2MP / 小图 <1MP | 像素总数 | 分档用 `>=` 与 `<` 显式闭合，无重叠无空档 |
+| 文案 | 带文案 / 纯图 | 标题是否为兜底 `tg_<频道>_<id>` | 只描述有无文字信息，不评价质量、不作放行依据 |
+
+**互斥与完备**：每张图在每个维度上恰好落一个选项；5 个维度各自计数合计都等于全库总数。选项带实时计数，且计数按实际导出条目统计，不会出现「标了 29 张却点不出结果」。
+
+**被移除的旧模块**：城市下拉、场景 chips、生活场景聚合、8 个质量过滤开关、`≥1MP` 静态导出门槛、Wikimedia CDN 预连接与图片代理、补采素材 / 抓取最新按钮、版权 / 作者 / 复制署名（TG 授权不明，展示这些字段会误导）。
+
+**重新分类**：
+
+```bash
+python taxonomy.py            # 按新结构重跑全部分类并写回 DB
+python taxonomy.py facets     # 只查看各维度计数
+python build_static.py        # 重新导出静态站（含分类契约）
+```
+
+前端交互：分类选项数据驱动分组渲染、点击已选项可取消、选项可折叠、组合筛选、URL 状态同步（可分享链接）、一键重置筛选、筛选摘要、卡片信息常驻、灯箱分类徽标与张数、键盘 `/` `Esc` `←` `→`、移动端选项横向滚动。
+
+## Telegram 生活素材：红线闸门 + 抓取器
+
+> **2026-11-14 起：Telegram 是唯一素材源。** 已清空全部 24,837 条 Commons 素材（备份见 `data/_backup_20261114_162337/`，不入仓），并停用 GitHub Actions 每日自动采集。`life_proof` 等 Commons 补量方案已否决，不再使用。
+
+经实测校准：频道在 `t.me/s/` 网页只渲染 600×800 缩略图，但 **MTProto 拉到的原图实际是 960×1280（1.23MP）**，过本站 1MP 门槛。它是**手机竖拍级**，不是 Commons 那种 1920px+ 真高清——这是改用 TG 素材后要接受的画质上限。任何 TG 入库都强制过 `tg_guard` 红线闸门。
 
 ### 红线清单（命中即拦，不做例外）
 
@@ -412,12 +442,14 @@ python server.py fix_meta
 | 翻墙工具 | VPN、翻墙、机场、加速器、Clash |
 | 文件类型 | .zip / .rar / .7z / .txt / .docx / .xlsx / .pdf / .apk / .exe |
 
-判定规则是**默认拒绝**：
+判定规则是**红线默认拒绝 + 软条件放宽**（2026-11-14 修订）：
 
 - 附件里出现任何非图片文件 → BLOCK
 - 正文命中任意红线 → BLOCK
-- 纯图片 + 有生活场景词 + 零红线 → ALLOW
-- 其余（有图但无场景词、纯文字）→ REVIEW，交人工
+- 纯图片 + 零红线 → ALLOW（**不再要求文案含生活场景词**）
+- 无附件 → REVIEW，交人工
+
+> 放宽原因：实测 `@sucai_so` 20 条里 11 条是「纯图无文案」的生活图，原规则全部 REVIEW 导致 **0 条入库**。用户确认只放宽「生活场景词」这一软条件，七类红线与「仅图片附件」两道硬闸不变。放宽放行的记录在 `tg_review.csv` 的 `reasons` 列带 `放宽放行：纯图无文案，零红线` 标记，可事后抽查。风险：若证件/人设类内容也以纯图无文案形式发布，会被放行——这是用户已确认自行承担的部分。
 
 ```bash
 python tg_guard.py --demo                        # 内置样本，看判定表
@@ -425,26 +457,44 @@ python tg_guard.py --url https://t.me/s/xxx      # 只解析帖子文本，不�
 python tg_guard.py --text "正文" --files "a.jpg,b.zip"
 ```
 
-`--url` 只取正文与附件名，不碰图片。这个工具不提供批量下载，也不该有。
+`--url` 只取正文与附件名，不碰图片。
 
-### 替代方案：生活证明场景
+### 抓取器 tg_fetch.py（个人使用，红线前置）
 
-想要「看起来真的在当地生活」的图，不必从这些频道拿。Commons 上有对应分类：
+每条帖子**先过 tg_guard 闸门**：ALLOW 才下载原图；下载后量尺寸，长边 < 900px 的低清图跳过；BLOCK / REVIEW 一律**只记审查日志、不入库**。本机运行需要你自己的 Telegram 账号（userbot），首次登录一次。
 
 ```bash
-python server.py life_proof        # 18 个分类，每个最多 100 张
-python server.py life_proof 40     # 每个分类 40 张
-python server.py life_scenes       # 落场景
+# 1) 准备凭据：新建 tg_config.py（已在 .gitignore，不会提交）
+#      TG_API_ID  = "1234567"
+#      TG_API_HASH = "abcdef0123456789abcdef0123456789"
+#    或在环境变量设置 TG_API_ID / TG_API_HASH（去 my.telegram.org 申请）
+# 2) 登录一次（交互输入手机号 + 验证码，仅此一次，会话存 tg_session.session）
+python tg_fetch.py --setup
+# 3) 抓取并入库（每频道 100 条，间隔 1s，去重按 source_id）
+python tg_fetch.py --run --limit 100
+#    指定频道 / 调低延迟：
+python tg_fetch.py --run --channels sucai_so,sucai_xinjiapoi --limit 50 --delay 0.5
+# 离线验证管线（不联网、不写库，内置样本覆盖 ALLOW/BLOCK/REVIEW/LOWRES）
+python tg_fetch.py --dry
 ```
 
-覆盖：诊所、医院、药房、图书馆、学校、商场、超市、公交站、火车站、社区中心、MRT、NTUC。这批图补的是「日常设施」，和前三批的「市井摊贩」互补。
+每帖判定写入 `tg_review.csv`：`channel,msg_id,verdict,reasons,life_hits,dim,saved`，verdict 取值 `SAVED / DUP / BLOCK / REVIEW / LOWRES / NO_MEDIA / WOULD_SAVE`。
+
+### 显示与边界
+
+- **本地 web**（`python server.py`）经 `/img?u=tgfile://文件名` 直接读 `data/tg_photos/`，无需改前端；路径做了 `basename` 防穿越。
+- **静态导出**（`build_static.py` → GitHub Pages）会把索引里的 `tgfile://` 改成相对路径 `tg/<name>`，并**只复制本次索引真正引用的图**到 `docs/tg/`。索引里没有 TG 图时会清掉 `docs/tg/`，避免公开站残留已下线素材。静态站前端的 `cdn()` 对 `tg/` 路径不走远程图片代理，防止破图。
+- **发布流程**（2026-11-14 起，CI 自动采集/自动提交已停用）：本机 `tg_fetch.py --run` → `python build_static.py` → **人工确认** → `git add docs data/library.db && git commit && git push`。`docs/tg/` 已在 `.gitignore` 里显式放行，否则图片上不了 Pages。
+- **分辨率**：960×1280 是手机竖拍级，非 1920px+ 真高清。这是 TG 图源的画质上限。
+- **合规提醒**：userbot 抓取属 Telegram ToS 灰区；BLOCK/REVIEW 内容绝不下载与留存。
 
 ## 版权说明（个人使用）
 
-这个库是**个人自用**，不做对外分发。即便如此，每张图仍保留 `License` 和 `Artist` 字段：
+这个库原本是**个人自用**，2026-11-14 起按你的要求把 TG 素材发布到公开的 GitHub Pages。
 
-- Wikimedia Commons 的图多为 CC BY-SA / CC BY，个人使用没有障碍；哪天要公开或商用，灯箱里的「复制署名」会生成标准署名文本，粘贴即可。
-- 如果以后要交付给客户，建议切到 Pexels / Unsplash（不要求署名），或者用自有实拍素材。
+- **TG 频道素材来源与授权不明**，`license` 字段一律记为 `unknown`，`artist` 记为 `@频道名`。它们不像 Commons 图那样有 CC 授权与可核对的署名链，公开分发的版权风险由使用者自行承担——这一点已在切换时明确确认。
+- 若以后要对外交付或商用，建议改用 Pexels / Unsplash（不要求署名）或自有实拍素材。
+- 旧的 Commons 素材已清空，但完整备份留在 `data/_backup_20261114_162337/`（含 DB 与索引），需要时可还原。
 
 ## 下一步：包成 Telegram Bot
 

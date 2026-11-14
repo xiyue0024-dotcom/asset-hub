@@ -3,9 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>印尼 · 新加坡 素材库</title>
-<link rel="preconnect" href="https://upload.wikimedia.org" crossorigin>
-<link rel="dns-prefetch" href="https://upload.wikimedia.org">
+<title>TG 生活素材库</title>
 <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
@@ -16,8 +14,8 @@
   <div class="brand">
     <span class="mark">素</span>
     <div class="brand-txt">
-      <h1>印尼 · 新加坡素材库</h1>
-      <p>生活 / 旅游 视觉素材检索</p>
+      <h1>TG 生活素材库</h1>
+      <p>Telegram 频道 · 生活实拍</p>
     </div>
   </div>
 
@@ -25,7 +23,7 @@
     <svg class="ico" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
       <circle cx="11" cy="11" r="7"></circle><path d="M20 20l-3.5-3.5" stroke-linecap="round"></path>
     </svg>
-    <input id="q" type="search" placeholder="搜索：巴厘岛 海滩 / 乌布 稻田 / 新加坡 街景 / 沙嗲" autocomplete="off" spellcheck="false">
+    <input id="q" type="search" placeholder="搜索频道 / 编号 / 文案" autocomplete="off" spellcheck="false">
     <button id="clearq" class="clearq" hidden aria-label="清空">×</button>
   </div>
 
@@ -37,41 +35,20 @@
 </header>
 
 <section class="filters">
-  <div class="frow">
-    <div class="seg" id="countrySeg">
-      <button data-v="" class="on">全部</button>
-      <button data-v="印度尼西亚">印度尼西亚</button>
-      <button data-v="新加坡">新加坡</button>
-    </div>
-
-    <select id="citySel" class="sel"><option value="">全部城市</option></select>
-
-    <div class="seg" id="orientSeg">
-      <button data-v="" class="on">全部比例</button>
-      <button data-v="landscape">横版</button>
-      <button data-v="portrait">竖版</button>
-    </div>
-
-    <label class="toggle"><input type="checkbox" id="savedOnly"><span>只看收藏</span></label>
-
-    <button class="ghost" id="ingestBtn" title="从图库拉取更多同主题素材">＋ 补采素材</button>
-    <button class="ghost" id="updateBtn" title="抓取各分类最新上传的素材">↻ 抓取最新</button>
+  <div class="fhead">
+    <span class="fhead-t">筛选</span>
+    <span class="fsum" id="filterSummary">全部素材</span>
+    <button class="ghost sm" id="resetBtn" title="清空全部筛选与关键词">重置筛选</button>
+    <button class="ghost sm" id="foldBtn" aria-expanded="true">收起选项</button>
   </div>
 
-  <div class="frow">
-    <span class="flabel">质量过滤</span>
-    <label class="toggle"><input type="checkbox" id="optHd" checked><span>只看高清</span></label>
-    <label class="toggle"><input type="checkbox" id="optWm" checked><span>隐藏疑似水印</span></label>
-    <label class="toggle"><input type="checkbox" id="optSelfie" checked><span>隐藏自拍/单人像</span></label>
-    <label class="toggle"><input type="checkbox" id="optBlur" checked><span>隐藏模糊</span></label>
-    <label class="toggle"><input type="checkbox" id="optGfx" checked><span>隐藏插画/二维图</span></label>
-    <label class="toggle"><input type="checkbox" id="optGray" checked><span>隐藏黑白/灰度</span></label>
-    <label class="toggle"><input type="checkbox" id="optCar" checked><span>隐藏车辆特写</span></label>
-    <label class="toggle"><input type="checkbox" id="optJunk" checked><span>隐藏标识/编号照</span></label>
+  <div id="taxGroups" class="taxgroups"></div>
+
+  <div class="frow ftools">
+    <label class="toggle"><input type="checkbox" id="savedOnly"><span>只看收藏</span></label>
+    <span class="kbd-hint">按 <kbd>/</kbd> 搜索 · <kbd>Esc</kbd> 关闭 · <kbd>←</kbd><kbd>→</kbd> 翻图</span>
     <span class="qinfo" id="qinfo"></span>
   </div>
-
-  <div class="chips" id="sceneChips"></div>
 </section>
 
 <main>
@@ -85,15 +62,20 @@
       <h2 id="emptyTitle">没有找到匹配的素材</h2>
       <p id="emptyText"></p>
       <div class="empty-acts">
-        <button class="btn primary" id="emptyIngest">从公开图库补采</button>
-        <button class="btn" id="emptyClear">清空关键词</button>
+        <button class="btn primary" id="emptyReset">重置筛选</button>
       </div>
-      <p class="empty-hint">素材库不会用不相关的图片凑数。没搜到就是没搜到。</p>
+      <p class="empty-hint">纯图素材没有文字描述，可按「来源频道」或「编号」检索。</p>
     </div>
   </div>
 
   <div class="sentinel" id="sentinel"></div>
   <div class="more"><button id="moreBtn" class="btn" hidden>加载更多</button></div>
+
+  <footer class="foot">
+    <span id="footInfo">素材来自 Telegram 频道</span>
+    <span class="foot-sep">·</span>
+    <span>来源与授权不明，仅限个人使用</span>
+  </footer>
 </main>
 
 <div class="lb" id="lb" hidden>
@@ -103,6 +85,7 @@
       <img id="lbImg" alt="">
       <button class="nav prev" id="lbPrev" aria-label="上一张">‹</button>
       <button class="nav next" id="lbNext" aria-label="下一张">›</button>
+      <span class="lb-count" id="lbCount"></span>
     </div>
     <aside class="lb-side">
       <button class="lb-close" data-close aria-label="关闭">×</button>
@@ -112,10 +95,9 @@
       <div class="lb-actions">
         <a id="lbDl" class="btn primary" download>下载原图</a>
         <button id="lbSave" class="btn">收藏</button>
-        <button id="lbHide" class="btn">隐藏此图（水印/人物）</button>
-        <button id="lbCopy" class="btn">复制署名</button>
+        <button id="lbHide" class="btn">隐藏此图</button>
       </div>
-      <a id="lbSrc" class="lb-link" target="_blank" rel="noopener">在来源页查看 ↗</a>
+      <a id="lbSrc" class="lb-link" target="_blank" rel="noopener">在 Telegram 打开原帖 ↗</a>
     </aside>
   </div>
 </div>
